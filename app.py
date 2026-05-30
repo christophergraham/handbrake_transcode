@@ -289,10 +289,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .progress-bar { height: 100%; border-radius: 20px; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 0.5s ease; }
 
   .queue-list { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
-  .queue-item { padding: 9px 14px; border-bottom: 1px solid var(--border); font-size: 0.83rem; color: var(--text2); font-family: 'Consolas', monospace; display: flex; align-items: center; gap: 8px; }
+  .queue-item { padding: 9px 14px; border-bottom: 1px solid var(--border); font-size: 0.83rem; color: var(--text2); font-family: 'Consolas', monospace; display: flex; align-items: center; gap: 8px; word-break: break-all; }
   .queue-item:last-child { border-bottom: none; }
   .queue-item:hover { background: var(--surface2); color: var(--text); }
-  .queue-item .q-icon { color: var(--accent); font-size: 0.9rem; }
+  .queue-item .q-icon { color: var(--accent); font-size: 0.9rem; flex-shrink: 0; }
   .queue-count { font-size: 0.82rem; color: var(--text2); margin-bottom: 10px; }
 
   /* Match log-list height to queue-list */
@@ -415,7 +415,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
             <span class="icon">📜</span>
             <h2>Agent Logs</h2>
             <span class="ml-auto" style="display:flex;gap:8px;">
-              <button class="btn btn-ghost btn-sm" onclick="loadLogs()">🔄 Refresh</button>
               <button class="btn btn-danger btn-sm" onclick="clearLogs()">🗑 Clear</button>
             </span>
           </div>
@@ -465,7 +464,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="pf-wrap">
           <table class="pf-table">
             <thead><tr>
-              <th>Filename</th><th>Path</th><th>Result</th><th>Note</th><th>Agent</th><th>Processed At</th>
+              <th style="width:180px;">Filename</th><th>Path</th><th style="width:120px;">Result</th><th>Note</th><th style="width:100px;">Agent</th><th style="width:160px;">Processed At</th>
             </tr></thead>
             <tbody id="pf-tbody">
               <tr><td colspan="6"><div class="empty-state"><div class="icon">⏳</div>Loading...</div></td></tr>
@@ -757,7 +756,7 @@ async function loadAgentsTab() {
       return;
     }
     let html = `<table class="agents-table"><thead><tr>
-      <th>Hostname</th><th>Status</th><th>Current File</th><th>Progress / ETA</th><th>Last Seen</th><th>Control</th>
+      <th>Hostname</th><th>Status</th><th>Current File</th><th>Progress / ETA</th><th>Last Seen</th><th>Control</th><th>Actions</th>
     </tr></thead><tbody>`;
     for (const a of agents) {
       const stale = isStale(a.last_seen);
@@ -773,6 +772,7 @@ async function loadAgentsTab() {
         <td>${progressBarWithETA(a.progress, a.hostname)}</td>
         <td><span class="last-seen ${stale?'stale':''}">${timeAgo(a.last_seen)}</span></td>
         <td>${controlBtn}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="removeAgent('${escHtml(a.hostname)}')">🗑 Remove</button></td>
       </tr>`;
     }
     html += '</tbody></table>';
@@ -811,6 +811,22 @@ async function resumeAgent(hostname) {
   }
 }
 
+async function removeAgent(hostname) {
+  if (!confirm(`Remove agent "${hostname}"? This will delete the agent record and release any assigned files.`)) return;
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(hostname)}`, { method: 'DELETE' });
+    if (res.ok) {
+      showToast(`🗑 Agent "${hostname}" removed`);
+      await loadAgents();
+      await loadAgentsTab();
+    } else {
+      showToast('❌ Failed to remove agent', 'error');
+    }
+  } catch(e) {
+    showToast('❌ Error', 'error');
+  }
+}
+
 // ---- Queue ----
 let currentQueueFiles = [];
 let scanInProgress = false;
@@ -842,7 +858,12 @@ async function transcodeScan() {
     scanBtn.innerHTML = 'Scanning...';
   }
   
-  showToast('🔍 Starting transcode scan...', 'success');
+  // Update queue display to show scanning status
+  document.getElementById('queue-count').textContent = `Scanning ${currentQueueFiles.length} files with FFprobe...`;
+  document.getElementById('queue-list').innerHTML = '<div class="empty-state"><div class="icon">🔍</div>Scanning files with FFprobe...<br>This may take a while for large queues.</div>';
+  
+  showToast(`🔍 Starting transcode scan of ${currentQueueFiles.length} files...`, 'success');
+  console.log(`[TranscodeScan] Starting scan of ${currentQueueFiles.length} files`);
   
   try {
     const res = await fetch('/api/transcode-scan', { 
@@ -851,6 +872,8 @@ async function transcodeScan() {
       body: JSON.stringify({ files: currentQueueFiles })
     });
     const data = await res.json();
+    
+    console.log('[TranscodeScan] Response received:', data);
     
     if (res.ok) {
       // Store scan results for files needing transcoding
@@ -1294,6 +1317,15 @@ def api_agent_resume(hostname):
     with get_db() as conn:
         conn.execute("UPDATE agents SET paused=0 WHERE hostname=?", (hostname,))
         conn.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/agents/<hostname>", methods=["DELETE"])
+def api_agent_delete(hostname):
+    with get_db() as conn:
+        conn.execute("DELETE FROM agents WHERE hostname=?", (hostname,))
+        conn.commit()
+    release_assignment(hostname)
     return jsonify({"ok": True})
 
 
