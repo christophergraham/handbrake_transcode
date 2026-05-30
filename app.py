@@ -88,6 +88,7 @@ def init_db():
             "exclusion_audio_codec": "aac",
             "exclusion_video_codec": "h264",
             "queue_limit": "500",
+            "temp_transcode_folder": "Z:\\Main\\transcode",
         }
         for k, v in defaults.items():
             conn.execute(
@@ -141,11 +142,16 @@ def get_video_extensions() -> set:
 
 
 def scan_queue(limit=500):
-    """Return list of video files that don't have a .done marker."""
+    """Return list of video files that haven't been processed (checked via database)."""
     folders_raw = get_setting("source_folders", "")
-    done_ext = get_setting("done_marker_ext", ".done")
     video_exts = get_video_extensions()
     folders = [f.strip() for f in folders_raw.splitlines() if f.strip()]
+    
+    # Get all processed files from database
+    with get_db() as conn:
+        processed_rows = conn.execute("SELECT filepath FROM processed_files").fetchall()
+        processed_files = {row["filepath"] for row in processed_rows}
+    
     files = []
     for folder in folders:
         if not os.path.isdir(folder):
@@ -157,8 +163,8 @@ def scan_queue(limit=500):
                 if ext not in video_exts:
                     continue
                 full_path = os.path.join(root, fname)
-                done_path = full_path + done_ext
-                if not os.path.exists(done_path):
+                # Check if file has been processed via database
+                if full_path not in processed_files:
                     files.append(full_path)
                     if len(files) >= limit:
                         return files
@@ -175,9 +181,6 @@ def assign_next_file(hostname: str, done_ext: str) -> str | None:
     queue = scan_queue(limit=1000)
     assigned_files = set(_agent_assignments.values())
     for f in queue:
-        done_path = f + done_ext
-        if os.path.exists(done_path):
-            continue
         if f in assigned_files:
             continue
         _agent_assignments[hostname] = f
@@ -294,13 +297,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   /* Match log-list height to queue-list */
   .log-list { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
-  .log-item { padding: 7px 14px; border-bottom: 1px solid var(--border); font-size: 0.8rem; font-family: 'Consolas', monospace; display: flex; gap: 10px; }
+  .log-item { padding: 7px 14px; border-bottom: 1px solid var(--border); font-size: 0.8rem; font-family: 'Consolas', monospace; display: flex; gap: 10px; flex-wrap: wrap; }
   .log-item:last-child { border-bottom: none; }
   .log-INFO { color: var(--text2); }
   .log-ERROR { color: var(--danger); background: rgba(255,77,109,0.05); }
   .log-WARN { color: var(--warn); }
   .log-time { color: var(--text2); opacity: 0.6; white-space: nowrap; font-size: 0.75rem; }
   .log-host { color: var(--accent); font-weight: 600; white-space: nowrap; }
+  .log-message { flex: 1; min-width: 0; word-break: break-word; }
 
   #toast { position: fixed; bottom: 28px; right: 28px; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 22px; font-size: 0.9rem; box-shadow: var(--shadow); transform: translateY(80px); opacity: 0; transition: all 0.3s; z-index: 9999; }
   #toast.show { transform: translateY(0); opacity: 1; }
@@ -321,8 +325,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .paused-banner { background: rgba(255,179,71,0.12); border: 1px solid var(--warn); border-radius: 8px; padding: 10px 16px; color: var(--warn); font-size: 0.88rem; font-weight: 600; display: none; align-items: center; gap: 8px; margin-bottom: 16px; }
   .paused-banner.visible { display: flex; }
 
-  .file-cell { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'Consolas', monospace; font-size: 0.8rem; color: var(--text2); }
-  .file-cell:hover { overflow: visible; white-space: normal; word-break: break-all; }
+  .file-cell { max-width: 340px; font-family: 'Consolas', monospace; font-size: 0.8rem; color: var(--text2); word-wrap: break-word; overflow-wrap: break-word; }
   .pf-filepath { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'Consolas', monospace; font-size: 0.78rem; color: var(--text2); }
   .pf-filepath:hover { overflow: visible; white-space: normal; word-break: break-all; }
 
@@ -341,6 +344,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .preset-mode-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   .eta-badge { font-size: 0.75rem; color: var(--warn); margin-left: 6px; white-space: nowrap; }
+  
+  /* Spinning animation for scan button */
+  @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  .btn-scanning { position: relative; }
+  .btn-scanning::before { content: '⏳'; display: inline-block; animation: spin 1s linear infinite; margin-right: 6px; }
 </style>
 </head>
 <body>
@@ -440,7 +448,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
           <span class="icon">📂</span>
           <h2>Processed Files</h2>
           <span class="ml-auto" style="display:flex;gap:8px;">
-            <button class="btn btn-ghost btn-sm" onclick="loadProcessed()">🔄 Refresh</button>
             <button class="btn btn-danger btn-sm" onclick="clearProcessed()">🗑 Clear All</button>
             <button class="btn btn-warn btn-sm" onclick="clearFiltered()">🗑 Clear Filtered</button>
           </span>
@@ -808,6 +815,9 @@ async function resumeAgent(hostname) {
 let currentQueueFiles = [];
 let scanInProgress = false;
 
+// Store scan results
+let scanResults = new Map();
+
 async function transcodeScan() {
   if (scanInProgress) {
     showToast('⚠ Scan already in progress', 'error');
@@ -822,11 +832,15 @@ async function transcodeScan() {
   
   scanInProgress = true;
   
-  // Disable refresh button
+  // Disable refresh button and add scanning indicator
   const refreshBtn = document.querySelector('.card-header .btn-ghost');
   const scanBtn = document.querySelector('.card-header .btn-primary');
   if (refreshBtn) refreshBtn.disabled = true;
-  if (scanBtn) scanBtn.disabled = true;
+  if (scanBtn) {
+    scanBtn.disabled = true;
+    scanBtn.classList.add('btn-scanning');
+    scanBtn.innerHTML = 'Scanning...';
+  }
   
   showToast('🔍 Starting transcode scan...', 'success');
   
@@ -839,9 +853,44 @@ async function transcodeScan() {
     const data = await res.json();
     
     if (res.ok) {
-      const msg = `✅ Scan complete: ${data.scanned || 0} scanned, ${data.skipped || 0} marked as no-change, ${data.errors || 0} errors`;
+      // Store scan results for files needing transcoding
+      scanResults.clear();
+      if (data.files_needing_transcode) {
+        for (const file of data.files_needing_transcode) {
+          scanResults.set(file.filepath, {
+            container: file.container,
+            video_codec: file.video_codec,
+            audio_codec: file.audio_codec
+          });
+        }
+      }
+      
+      const msg = data.message || `✅ Scan complete: ${data.scanned || 0} scanned, ${data.skipped || 0} no-change, ${data.needs_transcoding || 0} need transcoding`;
       showToast(msg, 'success');
-      await loadQueue();
+      
+      // Update the queue display to only show files that need transcoding
+      if (data.files_needing_transcode && data.files_needing_transcode.length > 0) {
+        const needsTranscodeFiles = data.files_needing_transcode.map(f => f.filepath);
+        currentQueueFiles = needsTranscodeFiles;
+        
+        document.getElementById('queue-count').textContent = 
+          `${needsTranscodeFiles.length} file${needsTranscodeFiles.length!==1?'s':''} need transcoding`;
+        
+        document.getElementById('queue-list').innerHTML = needsTranscodeFiles.map(f => {
+          const scanInfo = scanResults.get(f);
+          let indicator = '';
+          if (scanInfo) {
+            indicator = `<span style="color:var(--warn);font-size:0.75rem;margin-left:8px;" title="Container: ${escHtml(scanInfo.container)}, Video: ${escHtml(scanInfo.video_codec)}, Audio: ${escHtml(scanInfo.audio_codec)}">⚠ Needs Transcoding</span>`;
+          }
+          return `<div class="queue-item"><span class="q-icon">🎞</span>${escHtml(f)}${indicator}</div>`;
+        }).join('');
+      } else {
+        // No files need transcoding
+        currentQueueFiles = [];
+        document.getElementById('queue-count').textContent = '0 files need transcoding';
+        document.getElementById('queue-list').innerHTML = '<div class="empty-state"><div class="icon">✅</div>All files either processed or already optimized!</div>';
+      }
+      
       await loadProcessed();
     } else {
       showToast('❌ Scan failed: ' + (data.error || 'Unknown error'), 'error');
@@ -850,9 +899,13 @@ async function transcodeScan() {
     showToast('❌ Error starting scan', 'error');
   } finally {
     scanInProgress = false;
-    // Re-enable buttons
+    // Re-enable buttons and restore original text
     if (refreshBtn) refreshBtn.disabled = false;
-    if (scanBtn) scanBtn.disabled = false;
+    if (scanBtn) {
+      scanBtn.disabled = false;
+      scanBtn.classList.remove('btn-scanning');
+      scanBtn.innerHTML = '🔍 Transcode Scan';
+    }
   }
 }
 
@@ -883,9 +936,14 @@ async function loadQueue(silent = false) {
     
     if (!silent || filesChanged) {
       // Only update DOM if not silent or if files have changed
-      document.getElementById('queue-list').innerHTML = files.map(f =>
-        `<div class="queue-item"><span class="q-icon">🎞</span>${escHtml(f)}</div>`
-      ).join('');
+      document.getElementById('queue-list').innerHTML = files.map(f => {
+        const scanInfo = scanResults.get(f);
+        let indicator = '';
+        if (scanInfo) {
+          indicator = `<span style="color:var(--warn);font-size:0.75rem;margin-left:8px;" title="Container: ${escHtml(scanInfo.container)}, Video: ${escHtml(scanInfo.video_codec)}, Audio: ${escHtml(scanInfo.audio_codec)}">⚠ Needs Transcoding</span>`;
+        }
+        return `<div class="queue-item"><span class="q-icon">🎞</span>${escHtml(f)}${indicator}</div>`;
+      }).join('');
       currentQueueFiles = files;
     }
   } catch(e) {
@@ -1016,7 +1074,7 @@ async function loadLogs() {
         <span class="log-time">${t}</span>
         <span class="log-host">${escHtml(l.hostname)}</span>
         <span>[${l.level}]</span>
-        <span>${escHtml(l.message)}</span>
+        <span class="log-message">${escHtml(l.message)}</span>
       </div>`;
     }).join('');
   } catch(e) { console.error(e); }
@@ -1131,6 +1189,12 @@ async function init() {
     await loadAgents();
     await loadLogs();
     await loadQueue(true);  // silent refresh - only updates if queue changed
+    
+    // Auto-refresh processed files if on that tab
+    const processedTab = document.getElementById('tab-processed');
+    if (processedTab && processedTab.style.display !== 'none') {
+      await loadProcessed();
+    }
   }, 5000);
 }
 
@@ -1153,7 +1217,7 @@ def index():
 def api_agents():
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT hostname, status, current_file, progress, last_seen, paused FROM agents ORDER BY last_seen DESC"
+            "SELECT hostname, status, current_file, progress, last_seen, paused FROM agents ORDER BY hostname ASC"
         ).fetchall()
     return jsonify({"agents": [dict(r) for r in rows]})
 
@@ -1417,7 +1481,9 @@ def api_transcode_scan():
     
     scanned = 0
     skipped = 0
+    needs_transcoding = 0
     errors = 0
+    files_needing_transcode = []
     
     for filepath in files:
         scanned += 1
@@ -1473,17 +1539,9 @@ def api_transcode_scan():
             audio_ok = (probe_audio == want_audio) if want_audio else True
             
             if container_ok and video_ok and audio_ok:
-                # File matches exclusion criteria - mark as no-change
-                done_path = filepath + done_ext
+                # File matches exclusion criteria - record as no-change
                 try:
-                    with open(done_path, "w") as f:
-                        f.write(
-                            f"No change needed — already matches exclusion criteria.\n"
-                            f"Container: {container}, Video: {video_codec}, Audio: {audio_codec}\n"
-                            f"Checked by Transcode Scan at {datetime.datetime.now(datetime.UTC).isoformat()}Z\n"
-                        )
-                    
-                    # Record in processed files
+                    # Record in processed files database only
                     filename = os.path.basename(filepath)
                     note = f"Already {exc_container.upper()} / video:{video_codec} / audio:{audio_codec} — matches exclusion criteria"
                     now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1499,6 +1557,15 @@ def api_transcode_scan():
                     skipped += 1
                 except Exception as e:
                     errors += 1
+            else:
+                # File needs transcoding - add to list with codec info
+                needs_transcoding += 1
+                files_needing_transcode.append({
+                    "filepath": filepath,
+                    "container": container,
+                    "video_codec": video_codec,
+                    "audio_codec": audio_codec
+                })
                     
         except Exception as e:
             errors += 1
@@ -1508,8 +1575,10 @@ def api_transcode_scan():
         "ok": True,
         "scanned": scanned,
         "skipped": skipped,
+        "needs_transcoding": needs_transcoding,
         "errors": errors,
-        "message": f"Scan complete: {scanned} files scanned, {skipped} marked as no-change, {errors} errors"
+        "files_needing_transcode": files_needing_transcode,
+        "message": f"Scan complete: {scanned} scanned, {skipped} no-change, {needs_transcoding} need transcoding, {errors} errors"
     })
 
 

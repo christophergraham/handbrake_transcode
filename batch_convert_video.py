@@ -301,7 +301,10 @@ def transcode_file(
 ) -> bool:
     """Run HandBrakeCLI on input_path. Returns True on success."""
     output_path = build_output_path(input_path, output_ext)
-    done_path   = input_path + done_ext
+    
+    # Get the final path (original filename without _transcoded suffix)
+    base, ext = os.path.splitext(input_path)
+    final_path = base + "." + output_ext.lstrip(".")
 
     cmd = build_handbrake_cmd(handbrake_cli, input_path, output_path,
                               preset_mode, preset, preset_import_file)
@@ -353,15 +356,26 @@ def transcode_file(
     progress_callback(100.0 if proc.returncode == 0 else current_progress)
 
     if proc.returncode == 0:
+        # Delete original file and rename transcoded file
         try:
-            with open(done_path, "w") as f:
-                f.write(f"Completed by {HOSTNAME} at {datetime.datetime.utcnow().isoformat()}Z\n")
-                f.write(f"Output: {output_path}\n")
+            log.info("Deleting original file: %s", input_path)
+            os.remove(input_path)
+            log.info("Renaming %s -> %s", output_path, final_path)
+            os.rename(output_path, final_path)
+            log.info("Encode complete: %s", os.path.basename(final_path))
+            post_log(dashboard_url, "INFO", f"Encode complete: {os.path.basename(final_path)}")
         except Exception as e:
-            log.warning("Could not write .done marker: %s", e)
-
-        log.info("Encode complete: %s", os.path.basename(input_path))
-        post_log(dashboard_url, "INFO", f"Encode complete: {os.path.basename(input_path)}")
+            msg = f"Error during file cleanup/rename: {e}"
+            log.error(msg)
+            post_log(dashboard_url, "ERROR", msg)
+            # If rename failed, try to restore original if possible
+            if os.path.exists(output_path) and not os.path.exists(input_path):
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+            return False
+        
         return True
     else:
         msg = f"HandBrakeCLI exited with code {proc.returncode} for: {os.path.basename(input_path)}"
@@ -466,16 +480,7 @@ def run_agent(dashboard_url: str, idle_poll: int = IDLE_POLL):
             should_skip = False
 
         if should_skip:
-            # Write .done marker so the file leaves the queue
-            done_path = next_file + done_ext
-            try:
-                with open(done_path, "w") as f:
-                    f.write(
-                        f"No change needed — already matches exclusion criteria.\n"
-                        f"Checked by {HOSTNAME} at {datetime.datetime.utcnow().isoformat()}Z\n"
-                    )
-            except Exception as e:
-                log.warning("Could not write .done marker for no-change file: %s", e)
+            # File already recorded in database by check_exclusion, just continue
             files_processed += 1
             continue
 
@@ -515,23 +520,6 @@ def run_agent(dashboard_url: str, idle_poll: int = IDLE_POLL):
         else:
             record_processed(dashboard_url, next_file, "failure",
                              "HandBrakeCLI returned non-zero exit code")
-            # Write a .failure marker so this file is excluded from future queue scans
-            failure_path = next_file + done_ext + ".failure"
-            try:
-                with open(failure_path, "w") as f:
-                    f.write(
-                        f"FAILED — HandBrakeCLI non-zero exit.\n"
-                        f"Recorded by {HOSTNAME} at {datetime.datetime.utcnow().isoformat()}Z\n"
-                    )
-                # Also write the .done marker so scan_queue skips it
-                done_path = next_file + done_ext
-                with open(done_path, "w") as f:
-                    f.write(
-                        f"FAILED — see {os.path.basename(failure_path)}\n"
-                        f"Recorded by {HOSTNAME} at {datetime.datetime.utcnow().isoformat()}Z\n"
-                    )
-            except Exception as e:
-                log.warning("Could not write failure marker: %s", e)
 
     log.info("Agent finished. Total files processed: %d", files_processed)
 
