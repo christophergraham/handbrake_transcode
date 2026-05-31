@@ -263,9 +263,30 @@ def parse_progress(line: str) -> float | None:
     return None
 
 
-def build_output_path(input_path: str, output_ext: str) -> str:
-    base, _ = os.path.splitext(input_path)
-    return base + "_transcoded." + output_ext.lstrip(".")
+def build_output_path(input_path: str, output_ext: str, temp_folder: str = "") -> str:
+    """
+    Returns the path where HandBrake should write the transcoded file.
+    If temp_folder is provided, it writes inside the temp folder while
+    preserving the relative directory structure from the source.
+    """
+    if not temp_folder:
+        base, _ = os.path.splitext(input_path)
+        return base + "_transcoded." + output_ext.lstrip(".")
+
+    # Use temp folder + relative path
+    try:
+        # Try to make a relative path for folder mirroring
+        rel_dir = os.path.dirname(os.path.relpath(input_path, start=os.path.splitdrive(input_path)[0] + "\\"))
+    except Exception:
+        rel_dir = ""
+
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
+    output_dir = os.path.join(temp_folder, rel_dir) if rel_dir else temp_folder
+
+    # Ensure the directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    return os.path.join(output_dir, base_name + "_transcoded." + output_ext.lstrip("."))
 
 
 def build_handbrake_cmd(
@@ -298,9 +319,10 @@ def transcode_file(
     done_ext: str,
     dashboard_url: str,
     progress_callback,
+    temp_transcode_folder: str = "",
 ) -> bool:
     """Run HandBrakeCLI on input_path. Returns True on success."""
-    output_path = build_output_path(input_path, output_ext)
+    output_path = build_output_path(input_path, output_ext, temp_transcode_folder)
     
     # Get the final path (original filename without _transcoded suffix)
     base, ext = os.path.splitext(input_path)
@@ -356,20 +378,45 @@ def transcode_file(
     progress_callback(100.0 if proc.returncode == 0 else current_progress)
 
     if proc.returncode == 0:
-        # Delete original file and rename transcoded file
+        # Safely replace the original file:
+        # 1. Move transcoded file into the target directory under a temp name first.
+        # 2. Only delete the original AFTER the good file is safely in the target directory.
+        # 3. Then rename to final name.
         try:
-            log.info("Deleting original file: %s", input_path)
-            os.remove(input_path)
-            log.info("Renaming %s -> %s", output_path, final_path)
-            os.rename(output_path, final_path)
+            final_dir = os.path.dirname(final_path) or "."
+            os.makedirs(final_dir, exist_ok=True)
+
+            # Temporary name in the *original* directory (safer for cross-drive moves + atomic final rename)
+            temp_final_name = os.path.join(final_dir, os.path.basename(final_path) + ".transcoding")
+
+            log.info("Moving transcoded file from temp location into target dir: %s -> %s", output_path, temp_final_name)
+            shutil.move(output_path, temp_final_name)
+
+            # At this point a valid transcoded file exists in the target directory.
+            # It is now safe to delete the original.
+            if os.path.exists(input_path):
+                log.info("Deleting original file: %s", input_path)
+                os.remove(input_path)
+
+            # Final atomic rename (on same drive)
+            log.info("Renaming %s -> %s", temp_final_name, final_path)
+            os.rename(temp_final_name, final_path)
+
             log.info("Encode complete: %s", os.path.basename(final_path))
             post_log(dashboard_url, "INFO", f"Encode complete: {os.path.basename(final_path)}")
+
         except Exception as e:
-            msg = f"Error during file cleanup/rename: {e}"
+            msg = f"Error during final file move: {e}"
             log.error(msg)
             post_log(dashboard_url, "ERROR", msg)
-            # If rename failed, try to restore original if possible
-            if os.path.exists(output_path) and not os.path.exists(input_path):
+
+            # Cleanup any leftover temp files
+            if 'temp_final_name' in locals() and os.path.exists(temp_final_name):
+                try:
+                    os.remove(temp_final_name)
+                except Exception:
+                    pass
+            if os.path.exists(output_path):
                 try:
                     os.remove(output_path)
                 except Exception:
@@ -446,6 +493,7 @@ def run_agent(dashboard_url: str, idle_poll: int = IDLE_POLL):
         preset_import_file = resp.get("preset_import_file", "")
         output_ext         = resp.get("output_extension", "mkv")
         done_ext           = resp.get("done_marker_ext", ".done")
+        temp_transcode_folder = resp.get("temp_transcode_folder", "") or None
 
         # Validate HandBrakeCLI path
         if not os.path.isfile(handbrake_cli):
@@ -502,6 +550,7 @@ def run_agent(dashboard_url: str, idle_poll: int = IDLE_POLL):
                 done_ext=done_ext,
                 dashboard_url=dashboard_url,
                 progress_callback=progress_callback,
+                temp_transcode_folder=temp_transcode_folder,
             )
         except KeyboardInterrupt:
             log.info("Interrupted by user.")

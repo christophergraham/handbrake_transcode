@@ -423,6 +423,7 @@ def api_report():
         "exclusion_container": settings.get("exclusion_container", "mp4"),
         "exclusion_audio_codec": settings.get("exclusion_audio_codec", "aac"),
         "exclusion_video_codec": settings.get("exclusion_video_codec", "h264"),
+        "temp_transcode_folder": settings.get("temp_transcode_folder", ""),
     }
     # Only send the relevant preset field
     if preset_mode == "import":
@@ -490,6 +491,45 @@ def api_transcode_queue():
     return jsonify({"files": [dict(r) for r in rows]})
 
 
+@app.route("/api/transcode-queue", methods=["DELETE"])
+def api_transcode_queue_clear():
+    """Remove all items from the transcode queue (and any active assignments)."""
+    with get_db() as conn:
+        conn.execute("DELETE FROM transcode_queue")
+        conn.execute("DELETE FROM current_assignments")
+        conn.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/transcode-queue/remove", methods=["POST"])
+def api_transcode_queue_remove():
+    """Remove a single item from the transcode queue by filepath."""
+    data = request.get_json(force=True, silent=True) or {}
+    filepath = data.get("filepath")
+    if not filepath:
+        return jsonify({"ok": False, "error": "filepath is required"}), 400
+    with get_db() as conn:
+        conn.execute("DELETE FROM transcode_queue WHERE filepath=?", (filepath,))
+        conn.execute("DELETE FROM current_assignments WHERE filepath=?", (filepath,))
+        conn.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/transcode-queue/bulk-remove", methods=["POST"])
+def api_transcode_queue_bulk_remove():
+    """Remove multiple items from the transcode queue."""
+    data = request.get_json(force=True, silent=True) or {}
+    filepaths = data.get("filepaths", [])
+    if not filepaths:
+        return jsonify({"ok": True, "removed": 0})
+    with get_db() as conn:
+        placeholders = ",".join("?" * len(filepaths))
+        conn.execute(f"DELETE FROM transcode_queue WHERE filepath IN ({placeholders})", filepaths)
+        conn.execute(f"DELETE FROM current_assignments WHERE filepath IN ({placeholders})", filepaths)
+        conn.commit()
+    return jsonify({"ok": True, "removed": len(filepaths)})
+
+
 @app.route("/api/settings", methods=["GET"])
 def api_settings_get():
     return jsonify(get_all_settings())
@@ -503,6 +543,7 @@ def api_settings_post():
         "paused", "handbrake_cli", "ffprobe_path", "output_extension", "done_marker_ext",
         "file_types", "queue_limit",
         "exclusion_enabled", "exclusion_container", "exclusion_audio_codec", "exclusion_video_codec",
+        "temp_transcode_folder",
     }
     for k, v in data.items():
         if k in allowed:
@@ -689,6 +730,31 @@ def api_transcode_scan():
             )
             
             if result.returncode != 0:
+                # Record as failure so the file is removed from future scans
+                try:
+                    filename = os.path.basename(filepath)
+                    stderr_snippet = (result.stderr or "").strip()[:300]
+                    note = f"ffprobe failed (exit code {result.returncode})"
+                    if stderr_snippet:
+                        note += f": {stderr_snippet}"
+                    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    
+                    with get_db() as conn:
+                        conn.execute(
+                            """INSERT INTO processed_files (filepath, filename, hostname, result, note, processed_at)
+                               VALUES (?, ?, ?, ?, ?, ?)""",
+                            (filepath, filename, "TranscodeScan", "failure", note, now),
+                        )
+                        conn.commit()
+                    
+                    log_message(
+                        "TranscodeScan",
+                        "ERROR",
+                        f"Scan failed: {os.path.basename(filepath)} — {note}",
+                    )
+                except Exception:
+                    pass  # Don't let recording failure stop the scan
+                
                 errors += 1
                 continue
             
@@ -801,6 +867,28 @@ def api_transcode_scan():
                     pass
                     
         except Exception as e:
+            # Record as failure so problematic files don't keep reappearing in scans
+            try:
+                filename = os.path.basename(filepath)
+                note = f"Transcode Scan error: {str(e)[:300]}"
+                now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                
+                with get_db() as conn:
+                    conn.execute(
+                        """INSERT INTO processed_files (filepath, filename, hostname, result, note, processed_at)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (filepath, filename, "TranscodeScan", "failure", note, now),
+                    )
+                    conn.commit()
+                
+                log_message(
+                    "TranscodeScan",
+                    "ERROR",
+                    f"Scan failed: {os.path.basename(filepath)} — {str(e)[:200]}",
+                )
+            except Exception:
+                pass  # Best effort recording
+            
             errors += 1
             continue
     
