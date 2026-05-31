@@ -56,6 +56,15 @@ def init_db():
                 note         TEXT NOT NULL DEFAULT '',
                 processed_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS transcode_queue (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                filepath     TEXT NOT NULL UNIQUE,
+                container    TEXT NOT NULL DEFAULT '',
+                video_codec  TEXT NOT NULL DEFAULT '',
+                audio_codec  TEXT NOT NULL DEFAULT '',
+                added_at     TEXT NOT NULL
+            );
         """)
         
         # Migration: Add paused column to existing agents table if it doesn't exist
@@ -142,15 +151,18 @@ def get_video_extensions() -> set:
 
 
 def scan_queue(limit=500):
-    """Return list of video files that haven't been processed (checked via database)."""
+    """Return list of video files that haven't been processed AND aren't already in transcode queue."""
     folders_raw = get_setting("source_folders", "")
     video_exts = get_video_extensions()
     folders = [f.strip() for f in folders_raw.splitlines() if f.strip()]
     
-    # Get all processed files from database
+    # Get all processed files AND files already in transcode queue
     with get_db() as conn:
         processed_rows = conn.execute("SELECT filepath FROM processed_files").fetchall()
         processed_files = {row["filepath"] for row in processed_rows}
+        
+        transcode_rows = conn.execute("SELECT filepath FROM transcode_queue").fetchall()
+        transcode_files = {row["filepath"] for row in transcode_rows}
     
     files = []
     for folder in folders:
@@ -163,13 +175,12 @@ def scan_queue(limit=500):
                 if ext not in video_exts:
                     continue
                 full_path = os.path.join(root, fname)
-                # Check if file has been processed via database
-                if full_path not in processed_files:
+                # Skip if already processed OR already queued for transcoding
+                if full_path not in processed_files and full_path not in transcode_files:
                     files.append(full_path)
                     if len(files) >= limit:
                         return files
     return files
-
 # ---------------------------------------------------------------------------
 # Server-side file assignment (replaces lock files)
 # ---------------------------------------------------------------------------
@@ -178,13 +189,36 @@ _agent_assignments: dict = {}
 
 
 def assign_next_file(hostname: str, done_ext: str) -> str | None:
-    queue = scan_queue(limit=1000)
+    """Assign next file to agent, prioritizing transcode queue over pending queue."""
     assigned_files = set(_agent_assignments.values())
+    
+    # First, check transcode queue
+    with get_db() as conn:
+        transcode_rows = conn.execute(
+            "SELECT filepath FROM transcode_queue ORDER BY id ASC"
+        ).fetchall()
+        
+        for row in transcode_rows:
+            f = row["filepath"]
+            if f in assigned_files:
+                continue
+            # Verify file still exists
+            if os.path.isfile(f):
+                _agent_assignments[hostname] = f
+                return f
+            else:
+                # File no longer exists, remove from queue
+                conn.execute("DELETE FROM transcode_queue WHERE filepath=?", (f,))
+                conn.commit()
+    
+    # If no files in transcode queue, fall back to pending queue
+    queue = scan_queue(limit=1000)
     for f in queue:
         if f in assigned_files:
             continue
         _agent_assignments[hostname] = f
         return f
+    
     return None
 
 
@@ -398,11 +432,15 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="card">
           <div class="card-header">
             <span class="icon">📋</span>
-            <h2>Pending Queue</h2>
+            <h2>File Queues</h2>
             <span class="ml-auto" style="display:flex;gap:8px;">
               <button class="btn btn-primary btn-sm" onclick="transcodeScan()">🔍 Transcode Scan</button>
-              <button class="btn btn-ghost btn-sm" onclick="loadQueue()">🔄 Refresh</button>
+              <button class="btn btn-ghost btn-sm" onclick="refreshCurrentQueue()">🔄 Refresh</button>
             </span>
+          </div>
+          <div style="display:flex;gap:8px;margin-bottom:12px;">
+            <button class="btn btn-sm" id="queue-tab-pending" onclick="switchQueueTab('pending')" style="flex:1;background:var(--accent);color:#fff;">📋 Pending Queue</button>
+            <button class="btn btn-sm btn-ghost" id="queue-tab-transcode" onclick="switchQueueTab('transcode')" style="flex:1;">⚡ Transcode Queue</button>
           </div>
           <div class="queue-count" id="queue-count">Loading...</div>
           <div class="queue-list" id="queue-list">
@@ -829,10 +867,84 @@ async function removeAgent(hostname) {
 
 // ---- Queue ----
 let currentQueueFiles = [];
+let currentQueueType = 'pending'; // 'pending' or 'transcode'
 let scanInProgress = false;
 
 // Store scan results
 let scanResults = new Map();
+
+// Switch between pending and transcode queue tabs
+function switchQueueTab(type) {
+  currentQueueType = type;
+  const pendingBtn = document.getElementById('queue-tab-pending');
+  const transcodeBtn = document.getElementById('queue-tab-transcode');
+  
+  if (type === 'pending') {
+    pendingBtn.style.background = 'var(--accent)';
+    pendingBtn.style.color = '#fff';
+    pendingBtn.classList.remove('btn-ghost');
+    transcodeBtn.style.background = '';
+    transcodeBtn.style.color = '';
+    transcodeBtn.classList.add('btn-ghost');
+    loadQueue();
+  } else {
+    transcodeBtn.style.background = 'var(--accent)';
+    transcodeBtn.style.color = '#fff';
+    transcodeBtn.classList.remove('btn-ghost');
+    pendingBtn.style.background = '';
+    pendingBtn.style.color = '';
+    pendingBtn.classList.add('btn-ghost');
+    loadTranscodeQueue();
+  }
+}
+
+// Refresh current queue based on active tab
+function refreshCurrentQueue() {
+  if (currentQueueType === 'pending') {
+    loadQueue();
+  } else {
+    loadTranscodeQueue();
+  }
+}
+
+// Load transcode queue from database
+async function loadTranscodeQueue(silent = false) {
+  if (!silent) {
+    document.getElementById('queue-count').textContent = 'Loading...';
+    document.getElementById('queue-list').innerHTML = '<div class="empty-state"><div class="icon">⏳</div>Loading transcode queue...</div>';
+  }
+  try {
+    const res = await fetch('/api/transcode-queue');
+    const data = await res.json();
+    const files = data.files || [];
+    
+    document.getElementById('queue-count').textContent =
+      `${files.length} file${files.length!==1?'s':''} in transcode queue`;
+    
+    if (files.length === 0) {
+      document.getElementById('queue-list').innerHTML = '<div class="empty-state"><div class="icon">✅</div>Transcode queue is empty!</div>';
+      currentQueueFiles = [];
+      return;
+    }
+    
+    const filesChanged = JSON.stringify(files) !== JSON.stringify(currentQueueFiles);
+    
+    if (!silent || filesChanged) {
+      document.getElementById('queue-list').innerHTML = files.map(f => {
+        let codecInfo = '';
+        if (f.container || f.video_codec || f.audio_codec) {
+          codecInfo = `<span style="color:var(--text2);font-size:0.7rem;margin-left:8px;" title="Container: ${escHtml(f.container)}, Video: ${escHtml(f.video_codec)}, Audio: ${escHtml(f.audio_codec)}">[${escHtml(f.container)} / ${escHtml(f.video_codec)} / ${escHtml(f.audio_codec)}]</span>`;
+        }
+        return `<div class="queue-item"><span class="q-icon">⚡</span>${escHtml(f.filepath)}${codecInfo}</div>`;
+      }).join('');
+      currentQueueFiles = files.map(f => f.filepath);
+    }
+  } catch(e) {
+    if (!silent) {
+      document.getElementById('queue-list').innerHTML = '<div class="empty-state"><div class="icon">❌</div>Failed to load transcode queue.</div>';
+    }
+  }
+}
 
 async function transcodeScan() {
   if (scanInProgress) {
@@ -1211,7 +1323,13 @@ async function init() {
   setInterval(async () => {
     await loadAgents();
     await loadLogs();
-    await loadQueue(true);  // silent refresh - only updates if queue changed
+    
+    // Refresh the appropriate queue based on active tab
+    if (currentQueueType === 'pending') {
+      await loadQueue(true);  // silent refresh - only updates if queue changed
+    } else {
+      await loadTranscodeQueue(true);  // silent refresh for transcode queue
+    }
     
     // Auto-refresh processed files if on that tab
     const processedTab = document.getElementById('tab-processed');
@@ -1341,6 +1459,17 @@ def api_queue():
     return jsonify({"files": files, "total": len(files), "limited": limited, "limit": limit})
 
 
+@app.route("/api/transcode-queue", methods=["GET"])
+def api_transcode_queue():
+    """Get all files in the transcode queue."""
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT filepath, container, video_codec, audio_codec, added_at 
+               FROM transcode_queue ORDER BY id ASC"""
+        ).fetchall()
+    return jsonify({"files": [dict(r) for r in rows]})
+
+
 @app.route("/api/settings", methods=["GET"])
 def api_settings_get():
     return jsonify(get_all_settings())
@@ -1430,6 +1559,9 @@ def api_processed_post():
                VALUES (?, ?, ?, ?, ?, ?)""",
             (filepath, filename, hostname, result, note, now),
         )
+        # Remove from transcode queue if it exists there
+        if filepath:
+            conn.execute("DELETE FROM transcode_queue WHERE filepath=?", (filepath,))
         conn.commit()
     return jsonify({"ok": True})
 
@@ -1531,10 +1663,13 @@ def api_transcode_scan():
                 filepath,
             ]
             
+            # === UPDATED SUBPROCESS CALL (fix for UnicodeDecodeError) ===
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',      # ← This is the important fix
+                errors='replace',      # ← Gracefully handle any remaining bad bytes
                 timeout=30,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
@@ -1590,7 +1725,7 @@ def api_transcode_scan():
                 except Exception as e:
                     errors += 1
             else:
-                # File needs transcoding - add to list with codec info
+                # File needs transcoding - add to transcode queue and list
                 needs_transcoding += 1
                 files_needing_transcode.append({
                     "filepath": filepath,
@@ -1598,6 +1733,20 @@ def api_transcode_scan():
                     "video_codec": video_codec,
                     "audio_codec": audio_codec
                 })
+                
+                # Add to transcode queue database
+                try:
+                    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    with get_db() as conn:
+                        conn.execute(
+                            """INSERT OR IGNORE INTO transcode_queue (filepath, container, video_codec, audio_codec, added_at)
+                               VALUES (?, ?, ?, ?, ?)""",
+                            (filepath, container, video_codec, audio_codec, now),
+                        )
+                        conn.commit()
+                except Exception as e:
+                    # If insert fails (e.g., duplicate), continue
+                    pass
                     
         except Exception as e:
             errors += 1

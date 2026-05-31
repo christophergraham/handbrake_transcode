@@ -31,3 +31,12 @@ CREATE TABLE IF NOT EXISTS processed_files (
     note         TEXT NOT NULL DEFAULT '',
     processed_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS transcode_queue (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    filepath     TEXT NOT NULL UNIQUE,
+    container    TEXT NOT NULL DEFAULT '',
+    video_codec  TEXT NOT NULL DEFAULT '',
+    audio_codec  TEXT NOT NULL DEFAULT '',
+    added_at     TEXT NOT NULL
+);
