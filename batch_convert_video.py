@@ -26,12 +26,17 @@ import urllib.error
 import json
 import datetime
 import shutil
+import threading
+
+# Global state for active HandBrake process (used for forceful stop)
+current_handbrake_proc = None
+stop_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEFAULT_DASHBOARD = "http://localhost:5000"
+DEFAULT_DASHBOARD = "http://192.168.86.70:5000"
 REPORT_INTERVAL   = 5      # seconds between progress reports during encode
 IDLE_POLL         = 30     # seconds to wait when queue is empty
 PAUSE_POLL        = 10     # seconds to wait when paused
@@ -81,6 +86,28 @@ def report_status(dashboard_url: str, status: str, current_file: str = "",
         "progress": round(progress, 1),
         "request_file": request_file,
     })
+
+
+def _should_stop_current_work(dashboard_url: str) -> bool:
+    """Check with the dashboard if this agent has been told to stop."""
+    try:
+        resp = _api(dashboard_url, f"/api/agents/{HOSTNAME}")
+        return bool(resp.get("paused", False))
+    except Exception:
+        return False
+
+
+def kill_current_handbrake():
+    """Forcefully terminate the running HandBrakeCLI process if any."""
+    global current_handbrake_proc
+    with stop_lock:
+        if current_handbrake_proc and current_handbrake_proc.poll() is None:
+            try:
+                current_handbrake_proc.kill()
+                log.warning("Killed running HandBrakeCLI process due to stop request.")
+            except Exception as e:
+                log.error("Failed to kill HandBrake process: %s", e)
+        current_handbrake_proc = None
 
 
 def post_log(dashboard_url: str, level: str, message: str):
@@ -336,6 +363,8 @@ def transcode_file(
     log.info("Command: %s", " ".join(f'"{c}"' if " " in c else c for c in cmd))
     post_log(dashboard_url, "INFO", f"Starting encode: {os.path.basename(input_path)}")
 
+    global current_handbrake_proc
+
     try:
         proc = subprocess.Popen(
             cmd,
@@ -346,6 +375,15 @@ def transcode_file(
             errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
+        with stop_lock:
+            current_handbrake_proc = proc
+
+        # Check immediately if we were told to stop before we even started producing output
+        if _should_stop_current_work(dashboard_url):
+            kill_current_handbrake()
+            post_log(dashboard_url, "WARN", f"Agent stopped while starting encode of {os.path.basename(input_path)}")
+            return False
+
     except FileNotFoundError:
         msg = f"HandBrakeCLI not found at: {handbrake_cli}"
         log.error(msg)
@@ -359,6 +397,7 @@ def transcode_file(
 
     last_report = time.time()
     current_progress = 0.0
+    last_stop_check = time.time()
 
     for line in proc.stdout:
         line = line.rstrip()
@@ -374,10 +413,26 @@ def transcode_file(
             progress_callback(current_progress)
             last_report = now
 
+        # Periodically check if the agent was told to stop while running HandBrake
+        if now - last_stop_check >= 2.0:  # check every 2 seconds
+            last_stop_check = now
+            if _should_stop_current_work(dashboard_url):
+                kill_current_handbrake()
+                post_log(dashboard_url, "WARN", f"Agent stopped during encode of {os.path.basename(input_path)}")
+                return False
+
     proc.wait()
+    with stop_lock:
+        current_handbrake_proc = None
     progress_callback(100.0 if proc.returncode == 0 else current_progress)
 
     if proc.returncode == 0:
+        # Report that we're entering the final file move / copy phase.
+        # This prevents the dashboard from marking the agent as "stopped" due to staleness
+        # while performing potentially slow file operations on large videos.
+        progress_callback(100.0)
+        report_status(dashboard_url, "running", input_path, 100.0)
+
         # Safely replace the original file:
         # 1. Move transcoded file into the target directory under a temp name first.
         # 2. Only delete the original AFTER the good file is safely in the target directory.
@@ -404,6 +459,9 @@ def transcode_file(
 
             log.info("Encode complete: %s", os.path.basename(final_path))
             post_log(dashboard_url, "INFO", f"Encode complete: {os.path.basename(final_path)}")
+
+            # One more status update after successful finalization
+            report_status(dashboard_url, "running", input_path, 100.0)
 
         except Exception as e:
             msg = f"Error during final file move: {e}"
@@ -466,9 +524,10 @@ def run_agent(dashboard_url: str, idle_poll: int = IDLE_POLL):
             time.sleep(idle_poll)
             continue
 
-        # Check pause
+        # Check pause / stop
         if resp.get("paused", False):
-            log.info("Paused by dashboard. Waiting %ds...", PAUSE_POLL)
+            kill_current_handbrake()
+            log.info("Agent stopped by dashboard. Waiting %ds...", PAUSE_POLL)
             time.sleep(PAUSE_POLL)
             continue
 
@@ -533,6 +592,12 @@ def run_agent(dashboard_url: str, idle_poll: int = IDLE_POLL):
             continue
 
         # ---- Encode the file ----
+        # Final safety check before starting a potentially long-running encode
+        if _should_stop_current_work(dashboard_url):
+            kill_current_handbrake()
+            log.info("Agent was stopped before starting encode of %s", os.path.basename(next_file))
+            continue
+
         current_progress = [0.0]
 
         def progress_callback(pct: float):
