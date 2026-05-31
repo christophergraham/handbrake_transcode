@@ -292,6 +292,9 @@
               <tr><td colspan="6"><div class="empty-state"><div class="icon">⏳</div>Loading...</div></td></tr>
             </tbody>
           </table>
+          <div id="pf-load-more-container" style="text-align:center; padding:12px; display:none;">
+            <button id="pf-load-more" class="btn btn-ghost btn-sm">Load more...</button>
+          </div>
         </div>
       </div>
     </div>
@@ -467,7 +470,7 @@ function switchTab(name, btn) {
   });
   btn.classList.add('active');
   document.getElementById('tab-' + name).style.display = 'block';
-  if (name === 'processed') loadProcessed();
+  if (name === 'processed') loadProcessed({ reset: true });  // always start at newest when explicitly opening the tab
   if (name === 'transcode-queue') loadTranscodeQueueTab();
   if (name === 'settings') loadSettingsTab();
   if (name === 'agents') loadAgentsTab();
@@ -700,6 +703,7 @@ let currentQueueType = 'pending'; // 'pending' or 'transcode'
 let scanInProgress = false;
 let scanCancelled = false;
 let allTranscodeQueueItems = [];  // for the full filtered Transcode Queue tab
+let transcodeQueueTotal = 0;        // grand total for the top "⚡ Transcode Queue (N)" tab label (updated on activity)
 
 // Store scan results
 let scanResults = new Map();
@@ -759,6 +763,7 @@ async function loadTranscodeQueue(silent = false, force = false) {
     const data = await res.json();
     const files = data.files || [];
     
+    transcodeQueueTotal = files.length;
     document.getElementById('queue-count').textContent =
       `${files.length} file${files.length!==1?'s':''} in transcode queue`;
     
@@ -909,14 +914,23 @@ async function transcodeScan() {
       if (hadNewNeeds) {
         loadLogs();
 
-        // Always keep the Transcode Queue counts fresh on the tabs (top + small)
-        // even if the user is not currently viewing the Transcode sub-tab.
+        // Keep the top-level "⚡ Transcode Queue (N)" count live immediately during scan.
+        // We optimistically increment the total used by the tab label, then refresh the
+        // authoritative list in the background (for the full Transcode Queue tab).
+        const newly = (data.files_needing_transcode || []).length;
+        if (newly > 0) {
+          transcodeQueueTotal += newly;
+          updateQueueCounts();
+        }
+
+        // Background authoritative refresh of the full list (used when user opens the Transcode Queue tab)
         fetch('/api/transcode-queue')
           .then(r => r.json())
           .then(data => {
             const files = data.files || [];
             transcodeQueueFiles = files.map(f => f.filepath);
             allTranscodeQueueItems = files;
+            transcodeQueueTotal = allTranscodeQueueItems.length;  // correct any drift
             updateQueueCounts();
           })
           .catch(() => {});
@@ -926,7 +940,13 @@ async function transcodeScan() {
           loadTranscodeQueue(true, true);
         }
       } else if (data.skipped > 0) {
-        loadProcessed();
+        // New "no change" record(s) were added to processed_files.
+        // Increment the top tab count immediately so "Processed Files (N)" updates live during the scan.
+        processedTotal += (data.skipped || 0);
+        updateQueueCounts();
+
+        // Refresh the visible page if the user is on the Processed Files tab (so newest appear at top).
+        loadProcessed({ reset: true });
         loadLogs();
       } else {
         loadLogs();
@@ -970,7 +990,8 @@ async function transcodeScan() {
           '<div class="empty-state"><div class="icon">✅</div>All files either processed or already optimized!</div>';
       }
       
-      await loadProcessed();
+      await loadProcessed({ reset: true });  // ensure newest scan results visible at top
+      await refreshProcessedCount();         // keep the top tab label accurate after bulk inserts
       
       // Clean up any scan overlay that may still be present
       const overlay = document.getElementById('scan-overlay');
@@ -1212,19 +1233,80 @@ async function clearLogs() {
 }
 
 // ---- Processed Files ----
-async function loadProcessed() {
-  document.getElementById('pf-count').textContent = 'Loading...';
+// Paging + filter state for the Processed Files tab (supports infinite scroll / load more)
+let processedOffset = 0;
+let processedHasMore = false;
+let processedCurrentSearch = '';
+let processedCurrentResultFilter = '';
+let processedTotal = 0;  // grand total (unfiltered) for the top tab label; updated on init + after clear/scan actions
+
+async function loadProcessed({ append = false, reset = false, silent = false } = {}) {
+  const searchEl = document.getElementById('pf-search');
+  const resultEl = document.getElementById('pf-result-filter');
+
+  if (reset) {
+    processedOffset = 0;
+    processedHasMore = false;
+    allProcessedRows = [];
+  }
+
+  const currentSearch = (searchEl ? searchEl.value : processedCurrentSearch || '').trim();
+  const currentResult = (resultEl ? resultEl.value : processedCurrentResultFilter || '').trim();
+
+  processedCurrentSearch = currentSearch;
+  processedCurrentResultFilter = currentResult;
+
+  if (!silent) {
+    document.getElementById('pf-count').textContent = 'Loading...';
+  }
+
   try {
-    const res = await fetch('/api/processed');
+    const params = new URLSearchParams();
+    params.set('limit', '500');                    // comfortable page size for infinite scroll
+    params.set('offset', String(processedOffset));
+    if (currentSearch) params.set('search', currentSearch);
+    if (currentResult) params.set('result', currentResult);
+
+    const res = await fetch(`/api/processed?${params.toString()}`);
     const data = await res.json();
-    allProcessedRows = data.records || [];
-    // Re-apply any active filters (search + result dropdown) instead of always
-    // rendering the full unfiltered list. This prevents the filter from being
-    // reset every 5 seconds by the background auto-refresh.
-    filterProcessed();
+
+    const newRecords = data.records || [];
+
+    if (append) {
+      allProcessedRows = allProcessedRows.concat(newRecords);
+    } else {
+      allProcessedRows = newRecords;
+    }
+
+    processedOffset += newRecords.length;
+    processedHasMore = data.hasMore === true;
+
+    // Render the current page using the existing client-side filter logic on the just-loaded data.
+    // This keeps filtering fast and responsive without triggering another server load.
+    const filteredForRender = getFilteredRows();
+    renderProcessed(filteredForRender);
     updateQueueCounts();
+
+    // Show/hide the Load more container
+    const container = document.getElementById('pf-load-more-container');
+    const btn = document.getElementById('pf-load-more');
+    if (container) container.style.display = processedHasMore ? '' : 'none';
+    if (btn) btn.disabled = false;
   } catch(e) {
     document.getElementById('pf-tbody').innerHTML = '<tr><td colspan="6"><div class="empty-state"><div class="icon">❌</div>Failed to load records.</div></td></tr>';
+  }
+}
+
+// Lightweight unfiltered count fetch used to keep the top-level "Processed Files (N)" tab label accurate
+// after initial load or after mutating actions (clear, bulk delete, etc.).
+async function refreshProcessedCount() {
+  try {
+    const res = await fetch('/api/processed/count');
+    const data = await res.json();
+    processedTotal = data.total || 0;
+    updateQueueCounts();
+  } catch (e) {
+    // silent; label will fall back if needed
   }
 }
 
@@ -1236,7 +1318,7 @@ function resultBadge(result) {
 }
 
 function renderProcessed(rows) {
-  document.getElementById('pf-count').textContent = `${rows.length} record${rows.length!==1?'s':''}`;
+  document.getElementById('pf-count').textContent = `${rows.length} record${rows.length!==1?'s':''} shown`;
   if (rows.length === 0) {
     document.getElementById('pf-tbody').innerHTML = '<tr><td colspan="6"><div class="empty-state"><div class="icon">📭</div>No processed file records yet.</div></td></tr>';
     return;
@@ -1264,16 +1346,35 @@ function getFilteredRows() {
   return filtered;
 }
 
+// Called when the user manually changes the search or result filter in the UI.
+// This resets paging and triggers a fresh server load with the new criteria.
 function filterProcessed() {
-  renderProcessed(getFilteredRows());
+  processedOffset = 0;
+  processedHasMore = false;
+  loadProcessed({ reset: true });
 }
+
+// Wire the Load more button (created in the HTML)
+document.addEventListener('click', function(e) {
+  if (e.target && e.target.id === 'pf-load-more') {
+    loadProcessed({ append: true });
+  }
+});
 
 async function clearProcessed() {
   if (!confirm('Clear ALL processed file records? This cannot be undone.')) return;
   try {
     const res = await fetch('/api/processed', { method: 'DELETE' });
-    if (res.ok) { allProcessedRows = []; renderProcessed([]); showToast('🗑 Records cleared'); }
-    else showToast('❌ Failed to clear records', 'error');
+    if (res.ok) {
+      allProcessedRows = [];
+      processedOffset = 0;
+      processedHasMore = false;
+      renderProcessed([]);
+      await refreshProcessedCount();
+      showToast('🗑 Records cleared');
+    } else {
+      showToast('❌ Failed to clear records', 'error');
+    }
   } catch(e) { showToast('❌ Error', 'error'); }
 }
 
@@ -1291,6 +1392,7 @@ async function clearFiltered() {
     if (res.ok) {
       allProcessedRows = allProcessedRows.filter(r => !ids.includes(r.id));
       filterProcessed();
+      await refreshProcessedCount();
       showToast(`🗑 ${ids.length} record${ids.length!==1?'s':''} cleared`);
     } else {
       showToast('❌ Failed to clear records', 'error');
@@ -1305,6 +1407,7 @@ async function loadTranscodeQueueTab() {
     const res = await fetch('/api/transcode-queue');
     const data = await res.json();
     allTranscodeQueueItems = data.files || [];
+    transcodeQueueTotal = allTranscodeQueueItems.length;
     filterTranscodeQueue();
     updateQueueCounts();
   } catch(e) {
@@ -1357,12 +1460,14 @@ function updateQueueCounts() {
   // Top-level tabs
   const processedBtn = document.getElementById('tbtn-processed');
   if (processedBtn) {
-    processedBtn.innerHTML = `📂 Processed Files (${allProcessedRows.length})`;
+    const count = processedTotal > 0 ? processedTotal : allProcessedRows.length;
+    processedBtn.innerHTML = `📂 Processed Files (${count})`;
   }
 
   const tqFullBtn = document.getElementById('tbtn-transcode-queue');
   if (tqFullBtn) {
-    tqFullBtn.innerHTML = `⚡ Transcode Queue (${allTranscodeQueueItems.length})`;
+    const count = transcodeQueueTotal > 0 ? transcodeQueueTotal : allTranscodeQueueItems.length;
+    tqFullBtn.innerHTML = `⚡ Transcode Queue (${count})`;
   }
 
   // Small tabs inside the File Queues card
@@ -1387,6 +1492,7 @@ async function removeFromTranscodeQueue(filepath) {
     });
     if (res.ok) {
       allTranscodeQueueItems = allTranscodeQueueItems.filter(r => r.filepath !== filepath);
+      transcodeQueueTotal = allTranscodeQueueItems.length;
       filterTranscodeQueue();
       updateQueueCounts();
       showToast('🗑 Removed from transcode queue');
@@ -1417,6 +1523,7 @@ async function clearTranscodeQueue() {
     const res = await fetch('/api/transcode-queue', { method: 'DELETE' });
     if (res.ok) {
       allTranscodeQueueItems = [];
+      transcodeQueueTotal = 0;
       filterTranscodeQueue();
       updateQueueCounts();
       showToast('🗑 Transcode queue cleared');
@@ -1440,6 +1547,7 @@ async function clearFilteredTranscodeQueue() {
     });
     if (res.ok) {
       allTranscodeQueueItems = allTranscodeQueueItems.filter(r => !filepaths.includes(r.filepath));
+      transcodeQueueTotal = allTranscodeQueueItems.length;
       filterTranscodeQueue();
       updateQueueCounts();
       showToast(`🗑 ${filepaths.length} item${filepaths.length!==1?'s':''} removed`);
@@ -1472,46 +1580,17 @@ async function init() {
     // so its count is correct on initial page load.
     await loadTranscodeQueue(true, true);
 
+    // Populate accurate grand total for Processed Files tab label immediately
+    await refreshProcessedCount();
+
     updateQueueCounts();
   } catch (e) {
     console.error('[Init load error]', e);
   }
 
-  setInterval(async () => {
-    try {
-      await loadAgents();
-      await loadLogs();
-      
-      // Refresh the appropriate queue based on active tab.
-      // For Pending Queue we no longer do background folder scans —
-      // only on initial load or explicit manual Refresh.
-      if (currentQueueType === 'pending') {
-        // Do not touch the Pending Queue list from the background timer while a scan is running.
-        // The scan itself is responsible for progressively shrinking the list.
-        if (!scanInProgress && pendingQueueFiles.length > 0) {
-          renderPendingQueue(pendingQueueFiles);
-        }
-      } else {
-        await loadTranscodeQueue(true, false);
-      }
-
-      updateQueueCounts();
-      
-      // Auto-refresh processed files if on that tab
-      const processedTab = document.getElementById('tab-processed');
-      if (processedTab && processedTab.style.display !== 'none') {
-        await loadProcessed();
-      }
-
-      // Auto-refresh full Transcode Queue tab if visible
-      const tqTab = document.getElementById('tab-transcode-queue');
-      if (tqTab && tqTab.style.display !== 'none') {
-        await loadTranscodeQueueTab();
-      }
-    } catch (e) {
-      console.error('[Auto-refresh error]', e);
-    }
-  }, 5000);
+  // No periodic auto-refresh. Data is loaded on initial start and refreshed only at points
+  // where user activity or explicit actions (scan, remove, clear, manual Refresh buttons) cause changes.
+  // This prevents unnecessary server load and stops lists from mutating while the user is idle.
 }
 
 init();

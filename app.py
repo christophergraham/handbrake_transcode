@@ -587,14 +587,91 @@ def api_logs_delete():
 
 @app.route("/api/processed", methods=["GET"])
 def api_processed_get():
-    limit = int(request.args.get("limit", 2000))
+    """
+    Returns a page of processed file records.
+    Supports server-side paging (limit/offset) and filtering (search on filename/path, result type).
+    Always returns the total count of matching records so the UI can show accurate
+    "Processed Files (N)" tab counts and "X of Y" indicators even when paged.
+    """
+    limit = int(request.args.get("limit", 500))   # comfortable default page size
+    offset = int(request.args.get("offset", 0))
+    search = (request.args.get("search") or "").strip().lower()
+    result_filter = (request.args.get("result") or "").strip()
+
+    where_clauses = []
+    params = []
+
+    if search:
+        where_clauses.append("(LOWER(filename) LIKE ? OR LOWER(filepath) LIKE ?)")
+        like = f"%{search}%"
+        params.extend([like, like])
+
+    if result_filter:
+        where_clauses.append("result = ?")
+        params.append(result_filter)
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = "WHERE " + " AND ".join(where_clauses)
+
     with get_db() as conn:
+        # Get total count for the current filter (used for tab labels and "X of Y")
+        total_row = conn.execute(
+            f"SELECT COUNT(*) as total FROM processed_files {where_sql}",
+            params
+        ).fetchone()
+        total = total_row["total"] if total_row else 0
+
+        # Get the actual page
         rows = conn.execute(
-            """SELECT id, filepath, filename, hostname, result, note, processed_at
-               FROM processed_files ORDER BY id DESC LIMIT ?""",
-            (limit,),
+            f"""SELECT id, filepath, filename, hostname, result, note, processed_at
+                FROM processed_files
+                {where_sql}
+                ORDER BY id DESC
+                LIMIT ? OFFSET ?""",
+            params + [limit, offset]
         ).fetchall()
-    return jsonify({"records": [dict(r) for r in rows]})
+
+    return jsonify({
+        "records": [dict(r) for r in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "hasMore": (offset + len(rows)) < total
+    })
+
+
+@app.route("/api/processed/count", methods=["GET"])
+def api_processed_count():
+    """Lightweight endpoint that returns only the count of records matching optional filters.
+    Useful for keeping tab labels ("Processed Files (N)") accurate without loading rows.
+    """
+    search = (request.args.get("search") or "").strip().lower()
+    result_filter = (request.args.get("result") or "").strip()
+
+    where_clauses = []
+    params = []
+
+    if search:
+        where_clauses.append("(LOWER(filename) LIKE ? OR LOWER(filepath) LIKE ?)")
+        like = f"%{search}%"
+        params.extend([like, like])
+
+    if result_filter:
+        where_clauses.append("result = ?")
+        params.append(result_filter)
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = "WHERE " + " AND ".join(where_clauses)
+
+    with get_db() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) as total FROM processed_files {where_sql}",
+            params
+        ).fetchone()
+
+    return jsonify({"total": row["total"] if row else 0})
 
 
 @app.route("/api/processed", methods=["POST"])
