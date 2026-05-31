@@ -1,6 +1,6 @@
 # HandBrake Transcode Dashboard
 
-A production-ready web dashboard + agent system for batch-transcoding video files with HandBrakeCLI across one or more Windows machines.
+A modern web dashboard + multi-machine agent system for batch transcoding video files using HandBrakeCLI.
 
 ---
 
@@ -8,11 +8,11 @@ A production-ready web dashboard + agent system for batch-transcoding video file
 
 ```
 transcoder/
-├── app.py                   # Flask dashboard (run this on the server)
-├── batch_convert_video.py   # Agent script (run this on each encode machine)
-├── requirements.txt         # Python dependencies (Flask only)
-├── schema.sql               # Database schema reference
-├── transcode_dashboard.db   # SQLite database (auto-created on first run)
+├── app.py                   # Flask dashboard (run on the main server)
+├── batch_convert_video.py   # Agent script (run on each encoding machine)
+├── requirements.txt
+├── schema.sql
+├── transcode_dashboard.db   # SQLite (auto-created)
 └── README.md
 ```
 
@@ -21,177 +21,97 @@ transcoder/
 ## 🚀 Quick Start
 
 ### 1. Install dependencies
-
 ```cmd
 pip install -r requirements.txt
 ```
 
 ### 2. Start the dashboard
-
 ```cmd
 python app.py
 ```
 
-Open your browser to: **http://YOUR_SERVER_IP:5000** (or http://localhost:5000 from the same machine)
+Open **http://YOUR_SERVER_IP:5000**
 
-### 3. Configure source folders
+### 3. Configure the dashboard
+Go to **Settings** → set your Source Folders (one per line) and HandBrakeCLI path.
 
-In the dashboard, edit the **Source Folders** textarea — one path per line:
-
-```
-Z:\Media\Series
-Z:\Media\Movies
-Z:\Media\Documentary
-```
-
-Click **Save Folders**. The queue will auto-populate.
-
-### 4. Start an agent (on any Windows machine with HandBrakeCLI)
-
+### 4. Start agents
+On each encoding machine:
 ```cmd
 python batch_convert_video.py --dashboard http://YOUR_SERVER_IP:5000
 ```
 
-You can run multiple agents simultaneously across machines. They coordinate through the dashboard's server-side assignment system (no lock files required).
+You can run as many agents as you want across multiple machines.
 
 ---
 
-## 🖥️ Dashboard Features
+## 🖥️ Current Dashboard (Sidebar Navigation)
 
-| Section | Description |
-|---|---|
-| **Live Agents** | Real-time table of all connected agents with status, current file, progress bar, and last-seen time. Agents not seen in 30s are shown as "stopped". |
-| **Pending Queue** | Live scan of source folders for files not yet recorded in `processed_files`. Capped at 500 for performance. |
-| **Global Settings** | Max files limit, HandBrake preset, HandBrakeCLI path, output extension. |
-| **Source Folders** | Editable list of folders to scan. Saved to SQLite. |
-| **Agent Logs** | Live log stream from all agents. Last 1000 entries kept. |
-| **Pause/Resume** | Instantly pause or resume all agents from the dashboard. |
+The UI uses a clean left sidebar:
 
----
+- **Dashboard** — Command Center with global stats, Live Agents (full width), Active Work (Pending + small Transcode view), and Recent Activity.
+- **Live Agents** — Full detailed table of all agents with controls.
+- **File Queue** — Files waiting to be scanned/analyzed (Pending only).
+- **Transcode Queue** — Files that have been explicitly scanned and need transcoding (full management with filters and bulk actions).
+- **History** — Processed Files with server-side pagination + "Load more" (no hard 2000 record limit).
+- **Settings** — General settings, HandBrake options, and Exclusion Filter.
 
-## 🤖 Agent Features
-
-- **Zero extra dependencies** — uses only Python stdlib + Flask on the server side
-- **Multi-agent safe** — server-side assignment prevents two agents from receiving the same file
-- **Restart safe** — assignments tracked in DB + in-memory table (clearable from UI)
-- **Live progress** — reports encode % to dashboard every 5 seconds
-- **Pause/resume** — checks dashboard pause flag between files
-- **Max files limit** — stops after N files if configured
-- **Error reporting** — all errors posted to dashboard log view
-- **Auto-retry** — if dashboard is unreachable, agent keeps retrying
+### Key Current Features
+- Per-agent **Stop / Start** controls (Stop will terminate a running HandBrakeCLI process if the agent is actively encoding).
+- Optional **Temporary Transcode Folder** — transcodes are written to the temp location first, then safely moved back to the original folder on success (much safer than direct overwrite).
+- **Exclusion Filter** — skip files that already match your target container + audio + video codec using FFprobe.
+- Live sidebar counts for File Queue, Transcode Queue, and History.
+- Lightweight agent polling (only active when Dashboard or Live Agents view is open).
+- Safe post-encode file handling (original is only deleted after the transcoded file is safely in place).
 
 ---
 
-## ⚙️ Agent CLI Options
+## 🤖 Agent Behavior
 
-```
-python batch_convert_video.py [OPTIONS]
+- Agents poll the dashboard when idle.
+- They support a **Stop** command that can interrupt a running encode by killing HandBrakeCLI.
+- Optional exclusion check before encoding (saves CPU on already-optimized files).
+- Reports detailed logs and progress back to the dashboard.
+- Supports a configurable temporary transcode folder for safer workflows.
 
-Options:
-  --dashboard URL    Dashboard URL (default: http://localhost:5000)
-  --poll SECONDS     Queue poll interval when idle (default: 30)
-  --debug            Enable verbose debug logging
+**CLI options**
+```cmd
+python batch_convert_video.py --dashboard URL --poll SECONDS --debug
 ```
 
 ---
 
-## 📋 How It Works
+## 🔄 How It Works (Current Flow)
 
-1. **Dashboard** scans source folders (or you manually trigger "Transcode Scan") and populates the pending queue + optional transcode queue (after FFprobe analysis).
-2. **Agent** calls `/api/report` with `request_file=true` when idle. The server assigns the next available file (from `transcode_queue` first, then pending scan results) using an in-memory + DB-backed assignment table.
-3. **Agent** performs an optional FFprobe exclusion check (if enabled). Files that already match your target container/codec are recorded as "No Change" and skipped.
-4. **Agent** streams HandBrakeCLI output, parses progress, and POSTs updates to `/api/report` every 5 seconds.
-5. On success or failure, the agent records the outcome in `processed_files` via `/api/processed`. The file is removed from any queues. The original source file is **deleted** after successful transcode and the output is renamed in place (destructive workflow).
-6. Multiple agents coordinate safely because only the server hands out work items. No client-side lock files are used.
-
----
-
-## 🎬 HandBrake Presets
-
-Common preset names for `--preset`:
-
-| Preset | Description |
-|---|---|
-| `H.265 MKV 1080p30` | H.265/HEVC, MKV container, 1080p (recommended) |
-| `H.265 MKV 720p30` | H.265/HEVC, MKV container, 720p |
-| `H.264 MKV 1080p30` | H.264/AVC, MKV container, 1080p |
-| `Fast 1080p30` | H.264, fast encode, 1080p |
-
-Run `HandBrakeCLI --preset-list` to see all available presets on your system.
+1. You trigger a **Transcode Scan** from the dashboard (or it can be run on demand).
+2. The scan uses FFprobe + your exclusion rules to decide what needs work.
+3. Files needing transcoding are added to the **Transcode Queue**.
+4. Idle agents request work. The server hands out files from the Transcode Queue.
+5. The agent encodes with HandBrakeCLI and streams progress.
+6. On success, the agent safely moves the transcoded file into place (using a temp name during the move), deletes the original, and records the result in History.
+7. If you click **Stop** on an agent while it is encoding, HandBrakeCLI is terminated.
 
 ---
 
-## 🔌 API Reference
+## ⚠️ Important Notes
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/agents` | GET | List all agents and their status |
-| `/api/report` | POST | Agent reports status/progress |
-| `/api/queue` | GET | List pending files (max 500) |
-| `/api/settings` | GET | Get all settings |
-| `/api/settings` | POST | Update settings |
-| `/api/logs` | GET | Get agent logs |
-| `/api/logs` | POST | Agent posts a log entry |
-| `/api/logs` | DELETE | Clear all logs |
-
-### POST /api/report payload
-```json
-{
-  "hostname": "MYPC",
-  "status": "running",
-  "current_file": "Z:\\\\Media\\\\Movies\\\\film.mkv",
-  "progress": 42.5
-}
-```
-
-### Response from /api/report
-```json
-{
-  "ok": true,
-  "paused": false,
-  "max_files": 0,
-  "preset": "H.265 MKV 1080p30",
-  "handbrake_cli": "C:\\Program Files\\HandBrake\\HandBrakeCLI.exe",
-  "output_extension": "mkv",
-  "preset_mode": "preset"
-}
-```
-
----
-
-## 🗂️ Output Behavior & State
-
-The system is **database-driven**, not file-marker driven:
-
-| Location | Purpose |
-|---|---|
-| `processed_files` table | Authoritative record of every file the system has seen (success / failure / no-change). |
-| `transcode_queue` table | Files explicitly selected via "Transcode Scan" that need processing. |
-| `agents` table | Current status and in-flight assignment for each connected agent. |
-| `*_transcoded.mkv` (temp) | Intermediate file created by HandBrakeCLI during encode. On success the original is deleted and this is renamed to the final name. |
-
-**Important**: Successful transcodes **delete the original source file**. Make sure your source folders are not the only copy of your media.
+- Successful transcodes **delete the original source file** after the new file is safely written. Always keep backups.
+- The system is database-driven (`processed_files`, `transcode_queue`, `agents` tables).
+- New agents are detected automatically (light background polling when the relevant views are open).
 
 ---
 
 ## 🛠️ Troubleshooting
 
-**Agent can't find HandBrakeCLI**
-- Update the "HandBrakeCLI Path" in dashboard settings
-- Default: `C:\Program Files\HandBrake\HandBrakeCLI.exe`
-- Download from: https://handbrake.fr/downloads2.php
+**Agent shows as "stopped" while doing final file moves**  
+This was a previous UI bug (30s staleness threshold). It has been improved — the agent now reports status during the final copy/move phase, and the staleness window is longer.
 
-**Queue shows 0 files**
-- Check that source folder paths exist and are accessible from the dashboard machine
-- Ensure video files have supported extensions (configured in Settings)
-- The pending queue only shows files *not yet recorded* in the `processed_files` table. Use "Transcode Scan" or clear processed records if needed.
+**New agents not appearing**  
+Make sure the agent can reach the dashboard. New agents are picked up within ~10 seconds when you are viewing the Dashboard or Live Agents page.
 
-**Agent shows as "stopped" in dashboard**
-- Agent hasn't reported in 30+ seconds
-- Check the agent terminal for errors
-- Ensure network connectivity between agent and dashboard
+**Want to stop an encode in progress?**  
+Use the **Stop** button on the agent (in Live Agents or on the main Dashboard). This will kill the running HandBrakeCLI process.
 
-**Agent shows wrong "current file" or stuck jobs**
-- Restarting the dashboard clears the in-memory assignment table.
-- Use the Agents tab → "Remove" to clean up a dead agent record and release its assignment.
-- Use "Clear All" or "Clear Filtered" on the Processed Files tab to reset history.
+---
+
+Let me know if you want any section expanded (API docs, detailed Settings explanation, etc.). The current README is now aligned with the actual sidebar-based UI and the Stop + safe temp-folder workflow.
