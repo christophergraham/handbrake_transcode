@@ -1,1 +1,5 @@
+# Server (dashboard) dependencies only.
+# The agent (batch_convert_video.py) has ZERO external dependencies by design.
 flask>=3.0.0
+# For future: 'waitress' or 'gunicorn' for production WSGI serving on Windows/Linux
+

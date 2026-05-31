@@ -31,7 +31,7 @@ import shutil
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEFAULT_DASHBOARD = "http://192.168.86.70:5000"
+DEFAULT_DASHBOARD = "http://localhost:5000"
 REPORT_INTERVAL   = 5      # seconds between progress reports during encode
 IDLE_POLL         = 30     # seconds to wait when queue is empty
 PAUSE_POLL        = 10     # seconds to wait when paused
@@ -516,10 +516,12 @@ def run_agent(dashboard_url: str, idle_poll: int = IDLE_POLL):
         if success:
             record_processed(dashboard_url, next_file, "success",
                              f"Transcoded — preset_mode:{preset_mode} preset:{preset}")
+            post_log(dashboard_url, "INFO", f"✓ Transcoded: {os.path.basename(next_file)}")
             files_processed += 1
         else:
             record_processed(dashboard_url, next_file, "failure",
                              "HandBrakeCLI returned non-zero exit code")
+            post_log(dashboard_url, "ERROR", f"✗ Transcode failed: {os.path.basename(next_file)}")
 
     log.info("Agent finished. Total files processed: %d", files_processed)
 
