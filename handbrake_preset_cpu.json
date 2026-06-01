@@ -1,0 +1,62 @@
+{
+  "PresetList": [
+    {
+      "AlignAVStart": true,
+      "AudioCopyMask": [
+        "copy:aac",
+        "copy:ac3",
+        "copy:eac3",
+        "copy:truehd",
+        "copy:dts",
+        "copy:dtshd",
+        "copy:mp3",
+        "copy:opus"
+      ],
+      "AudioEncoderFallback": "av_aac",
+      "AudioList": [
+        {
+          "AudioBitrate": 192,
+          "AudioEncoder": "av_aac",
+          "AudioMixdown": "stereo"
+        },
+        {
+          "AudioEncoder": "copy"
+        }
+      ],
+      "ChapterMarkers": true,
+      "FileFormat": "av_mp4",
+      "Optimize": true,
+      "PictureCropMode": 0,
+      "PictureWidth": 0,
+      "PictureHeight": 0,
+      "PictureUseMaximumSize": true,
+      "PresetDescription": "Plex compatible - Original resolution, CRF 18, MP4, H.264, AAC + surround, all subtitles (forced burned)",
+      "PresetName": "Plex Original",
+      "Type": 1,
+      "SubtitleTrackSelectionBehavior": "all",
+      "SubtitleTrackNamePassthru": true,
+      "SubtitleAddForeignAudioSearch": true,
+      "SubtitleBurnBehavior": "foreign",
+      "SubtitleBurnBDSub": false,
+      "SubtitleBurnDVDSub": false,
+      "SubtitleLanguageList": ["eng"],
+      "SubtitleAddCC": false,
+      "VideoEncoder": "x264",
+      "VideoQualityType": 2,
+      "VideoQualitySlider": 18,
+      "VideoPreset": "slow",
+      "VideoProfile": "high",
+      "VideoLevel": "auto",
+      "VideoMultiPass": true,
+      "MetadataPassthru": true,
+      "VideoOptionExtra": "",
+      "PictureDARWidth": 0,
+      "PicturePAR": "auto",
+      "PicturePARWidth": 0,
+      "PicturePARHeight": 0
+    }
+  ],
+  "VersionMajor": 40,
+  "VersionMicro": 0,
+  "VersionMinor": 0
+}

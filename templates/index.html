@@ -779,6 +779,13 @@
           </div>
         </div>
         <div class="stat-tile">
+          <span class="icon">▶️</span>
+          <div>
+            <div class="value" id="stat-processing">0</div>
+            <div class="label">Processing</div>
+          </div>
+        </div>
+        <div class="stat-tile">
           <span class="icon">✅</span>
           <div>
             <div class="value" id="stat-processed">0</div>
@@ -969,16 +976,8 @@
             <small style="color:var(--text2); font-size:0.75rem;">If set, transcoded files are written here first, then moved back to original location on success.</small>
           </div>
         </div>
-        <div style="display:flex; gap:8px; justify-content:flex-end;">
-          <button class="btn btn-primary" onclick="saveGeneralSettings()">💾 Save</button>
-        </div>
-      </div>
 
-      <div class="card" style="margin-bottom:24px;">
-        <div class="card-header">
-          <span class="icon">🎞️</span>
-          <h2>HandBrake Settings</h2>
-        </div>
+        <!-- Moved from legacy section -->
         <div class="form-row">
           <div class="form-group">
             <label>HandBrakeCLI Path</label>
@@ -989,25 +988,85 @@
             <input type="text" id="s-ffprobe-path" placeholder="C:\ffmpeg\bin\ffprobe.exe">
           </div>
         </div>
-        <div class="form-group" style="margin-bottom:12px;">
-          <label>Preset Mode</label>
-          <div class="preset-mode-row">
-            <button class="preset-mode-btn active" id="pm-preset" onclick="setPresetMode('preset')">📋 Named Preset</button>
-            <button class="preset-mode-btn" id="pm-import" onclick="setPresetMode('import')">📁 Preset Import File</button>
-          </div>
-        </div>
-        <div id="preset-name-group" class="form-group" style="margin-bottom:14px;">
-          <label>Preset Name</label>
-          <input type="text" id="s-preset" placeholder="H.265 MKV 1080p30">
-        </div>
-        <div id="preset-import-group" class="form-group" style="margin-bottom:14px; display:none;">
-          <label>Preset Import File Path</label>
-          <input type="text" id="s-preset-import-file" placeholder="Z:\Main\Plex-Original.json">
-        </div>
+
         <div style="display:flex; gap:8px; justify-content:flex-end;">
-          <button class="btn btn-primary" onclick="saveHandbrakeSettings()">💾 Save</button>
+          <button class="btn btn-primary" onclick="saveGeneralSettings()">💾 Save</button>
         </div>
       </div>
+
+      <div class="card" style="margin-bottom:24px;">
+        <div class="card-header">
+          <span class="icon">🎞️</span>
+          <h2>CPU Preset (for agents with CPU enabled)</h2>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>CPU Preset Mode</label>
+            <div class="preset-mode-row">
+              <button class="preset-mode-btn active" id="cpu-pm-preset" onclick="setCPUPresetMode('preset')">📋 Named Preset</button>
+              <button class="preset-mode-btn" id="cpu-pm-import" onclick="setCPUPresetMode('import')">📁 Preset Import File</button>
+            </div>
+          </div>
+        </div>
+        <div id="cpu-preset-name-group" class="form-group" style="margin-bottom:14px;">
+          <label>CPU Preset Name</label>
+          <input type="text" id="s-cpu-preset" placeholder="H.265 MKV 1080p30">
+        </div>
+        <div id="cpu-preset-import-group" class="form-group" style="margin-bottom:14px; display:none;">
+          <label>CPU Preset Import File Path</label>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input type="text" id="s-cpu-preset-import-file" placeholder="Z:\Presets\CPU.json" style="flex:1;">
+            <button type="button" class="btn btn-ghost btn-sm" onclick="loadPresetsFromImportFile('cpu')">Load Presets</button>
+          </div>
+          <div style="margin-top:8px;">
+            <label style="font-size:0.8rem; color:var(--text-2);">Preset Name (from file)</label>
+            <select id="s-cpu-preset-from-import" style="width:100%;">
+              <option value="">-- Select a preset from the file --</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; justify-content:flex-end;">
+          <button class="btn btn-primary" onclick="saveCPUPresetSettings()">💾 Save CPU Preset</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:24px;">
+        <div class="card-header">
+          <span class="icon">🎞️</span>
+          <h2>GPU Preset (for agents with GPU enabled)</h2>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>GPU Preset Mode</label>
+            <div class="preset-mode-row">
+              <button class="preset-mode-btn active" id="gpu-pm-preset" onclick="setGPUPresetMode('preset')">📋 Named Preset</button>
+              <button class="preset-mode-btn" id="gpu-pm-import" onclick="setGPUPresetMode('import')">📁 Preset Import File</button>
+            </div>
+          </div>
+        </div>
+        <div id="gpu-preset-name-group" class="form-group" style="margin-bottom:14px;">
+          <label>GPU Preset Name</label>
+          <input type="text" id="s-gpu-preset" placeholder="H.265 MKV 1080p30 (NVENC)">
+        </div>
+        <div id="gpu-preset-import-group" class="form-group" style="margin-bottom:14px; display:none;">
+          <label>GPU Preset Import File Path</label>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <input type="text" id="s-gpu-preset-import-file" placeholder="Z:\Presets\GPU.json" style="flex:1;">
+            <button type="button" class="btn btn-ghost btn-sm" onclick="loadPresetsFromImportFile('gpu')">Load Presets</button>
+          </div>
+          <div style="margin-top:8px;">
+            <label style="font-size:0.8rem; color:var(--text-2);">Preset Name (from file)</label>
+            <select id="s-gpu-preset-from-import" style="width:100%;">
+              <option value="">-- Select a preset from the file --</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; justify-content:flex-end;">
+          <button class="btn btn-primary" onclick="saveGPUPresetSettings()">💾 Save GPU Preset</button>
+        </div>
+      </div>
+
+
 
       <div class="card">
         <div class="card-header">
@@ -1051,7 +1110,8 @@
 <script>
 let isPaused = false;
 let allProcessedRows = [];
-let currentPresetMode = 'preset';
+window.cpuPresetMode = 'preset';
+window.gpuPresetMode = 'preset';
 // Track encode start times per agent for ETA calculation
 const agentEncodeStart = {};
 const agentLastProgress = {};
@@ -1129,26 +1189,29 @@ function progressBar(pct) {
           <span style="font-size:0.78rem;color:var(--text2);margin-left:6px;">${p.toFixed(1)}%</span>`;
 }
 
-function progressBarWithETA(pct, hostname) {
+function progressBarWithETA(pct, key) {
+  // key can be a plain hostname (for single-worker views) or "hostname:cpu"/"hostname:gpu"
+  // to keep independent ETA tracking when an agent runs both workers concurrently.
+  const k = key || 'unknown';
   const p = Math.min(100, Math.max(0, pct || 0));
   let etaHtml = '';
 
   if (p > 0 && p < 100) {
     const now = Date.now();
-    if (!agentEncodeStart[hostname] || agentLastProgress[hostname] === 0) {
-      agentEncodeStart[hostname] = now;
+    if (!agentEncodeStart[k] || agentLastProgress[k] === 0) {
+      agentEncodeStart[k] = now;
     }
-    agentLastProgress[hostname] = p;
+    agentLastProgress[k] = p;
 
-    const elapsed = (now - agentEncodeStart[hostname]) / 1000; // seconds
+    const elapsed = (now - agentEncodeStart[k]) / 1000; // seconds
     if (elapsed > 5 && p > 1) {
       const rate = p / elapsed; // % per second
       const remaining = (100 - p) / rate;
       etaHtml = `<span class="eta-badge">ETA ${formatDuration(remaining)}</span>`;
     }
   } else if (p === 0 || p >= 100) {
-    delete agentEncodeStart[hostname];
-    delete agentLastProgress[hostname];
+    delete agentEncodeStart[k];
+    delete agentLastProgress[k];
   }
 
   return `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;">
@@ -1218,24 +1281,55 @@ async function loadAgents() {
       return;
     }
 
+    // On the dashboard "front page" Live Agents we expand to one row per *enabled* worker
+    // (cpu and/or gpu) so you can see the separate current file + progress/ETA for each
+    // concurrent transcode an agent is performing. Agents/workers with the capability disabled
+    // are not shown here.
+    //
+    // Note: CPU/GPU capability checkboxes are intentionally omitted here (compact view).
+    // They remain available in the full "Live Agents" tab for management.
     let html = `<table class="agents-table"><thead><tr>
       <th>Hostname</th><th>Status</th><th>Current File</th><th>Progress / ETA</th><th>Last Seen</th><th>Control</th>
     </tr></thead><tbody>`;
+    let renderedAny = false;
+
     for (const a of agents) {
-      const stale = isStale(a.last_seen);
-      const status = stale ? 'stopped' : a.status;
+      const workers = (a.workers || []).filter(w => w && (w.work_type === 'cpu' || w.work_type === 'gpu'));
+      if (workers.length === 0) {
+        // No enabled workers for this agent → do not show on the front-page Live Agents
+        // (the full Agents tab still shows the agent for capability management).
+        continue;
+      }
+
       const isPaused = a.paused === 1 || a.paused === true;
       const controlBtn = isPaused 
         ? `<button class="btn btn-success btn-sm" onclick="startAgent('${escHtml(a.hostname)}')">▶ Start</button>`
         : `<button class="btn btn-warn btn-sm" onclick="stopAgent('${escHtml(a.hostname)}')">⏹ Stop</button>`;
-      html += `<tr>
-        <td><strong>${escHtml(a.hostname)}</strong></td>
-        <td>${statusBadge(status)}${isPaused ? ' <span class="status-badge" style="background:rgba(255,179,71,0.15);color:var(--warn);margin-left:4px;">⏹ Stopped</span>' : ''}</td>
-        <td><div class="file-cell" title="${escHtml(a.current_file||'')}">${a.current_file ? escHtml(a.current_file) : '<span style="opacity:0.4">—</span>'}</div></td>
-        <td>${progressBarWithETA(a.progress, a.hostname)}</td>
-        <td><span class="last-seen ${stale?'stale':''}">${timeAgo(a.last_seen)}</span></td>
-        <td>${controlBtn}</td>
-      </tr>`;
+
+      for (const w of workers) {
+        renderedAny = true;
+        const wLast = w.last_seen || a.last_seen;
+        const wStale = isStale(wLast);
+        const wStatus = wStale ? 'stopped' : (w.status || 'idle');
+        const typeBadge = `<span style="background:${w.work_type === 'gpu' ? 'var(--accent-2)' : 'var(--warn)'};color:#111;font-size:0.65rem;padding:1px 5px;border-radius:3px;margin-left:6px;">${w.work_type.toUpperCase()}</span>`;
+        const fileHtml = w.current_file
+          ? `<div class="file-cell" title="${escHtml(w.current_file)}">${escHtml(w.current_file)}</div>`
+          : '<span style="opacity:0.4">—</span>';
+
+        const workerKey = `${a.hostname}:${w.work_type}`;
+        html += `<tr>
+          <td><strong>${escHtml(a.hostname)}</strong>${typeBadge}</td>
+          <td>${statusBadge(wStatus)}${isPaused ? ' <span class="status-badge" style="background:rgba(255,179,71,0.15);color:var(--warn);margin-left:4px;">⏹ Stopped</span>' : ''}</td>
+          <td>${fileHtml}</td>
+          <td>${progressBarWithETA(w.progress, workerKey)}</td>
+          <td><span class="last-seen ${wStale?'stale':''}">${timeAgo(wLast)}</span></td>
+          <td>${controlBtn}</td>
+        </tr>`;
+      }
+    }
+
+    if (!renderedAny) {
+      html += `<tr><td colspan="6"><div class="empty-state" style="padding:12px 0"><div class="icon">🤖</div>No enabled workers to display.</div></td></tr>`;
     }
     html += '</tbody></table>';
     document.getElementById('agents-container').innerHTML = html;
@@ -1257,7 +1351,8 @@ async function loadAgentsTab() {
       return;
     }
     let html = `<table class="agents-table"><thead><tr>
-      <th>Hostname</th><th>Status</th><th>Current File</th><th>Progress / ETA</th><th>Last Seen</th><th>Control</th><th>Actions</th>
+      <th>Hostname</th><th>Status</th><th>Current File</th><th>Progress / ETA</th><th>Last Seen</th>
+      <th>CPU</th><th>GPU</th><th>Control</th><th>Actions</th>
     </tr></thead><tbody>`;
     for (const a of agents) {
       const stale = isStale(a.last_seen);
@@ -1266,12 +1361,17 @@ async function loadAgentsTab() {
       const controlBtn = isPaused 
         ? `<button class="btn btn-success btn-sm" onclick="startAgent('${escHtml(a.hostname)}')">▶ Start</button>`
         : `<button class="btn btn-warn btn-sm" onclick="stopAgent('${escHtml(a.hostname)}')">⏹ Stop</button>`;
+      const cpuChecked = (a.cpu_enabled ?? 1) ? 'checked' : '';
+      const gpuChecked = (a.gpu_enabled ?? 1) ? 'checked' : '';
+
       html += `<tr>
         <td><strong>${escHtml(a.hostname)}</strong></td>
         <td>${statusBadge(status)}${isPaused ? ' <span class="status-badge" style="background:rgba(255,179,71,0.15);color:var(--warn);margin-left:4px;">⏹ Stopped</span>' : ''}</td>
         <td><div class="file-cell" title="${escHtml(a.current_file||'')}">${a.current_file ? escHtml(a.current_file) : '<span style="opacity:0.4">—</span>'}</div></td>
         <td>${progressBarWithETA(a.progress, a.hostname)}</td>
         <td><span class="last-seen ${stale?'stale':''}">${timeAgo(a.last_seen)}</span></td>
+        <td><input type="checkbox" ${cpuChecked} onchange="setAgentCapability('${escHtml(a.hostname)}', 'cpu', this.checked)"></td>
+        <td><input type="checkbox" ${gpuChecked} onchange="setAgentCapability('${escHtml(a.hostname)}', 'gpu', this.checked)"></td>
         <td>${controlBtn}</td>
         <td><button class="btn btn-danger btn-sm" onclick="removeAgent('${escHtml(a.hostname)}')">🗑 Remove</button></td>
       </tr>`;
@@ -1328,6 +1428,27 @@ async function removeAgent(hostname) {
     }
   } catch(e) {
     showToast('❌ Error', 'error');
+  }
+}
+
+async function setAgentCapability(hostname, type, enabled) {
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(hostname)}/capability`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, enabled })
+    });
+    if (res.ok) {
+      showToast(`${type.toUpperCase()} ${enabled ? 'enabled' : 'disabled'} for ${hostname}`);
+      refreshAgents();
+    } else {
+      showToast('❌ Failed to update capability', 'error');
+      // Revert checkbox on failure
+      refreshAgents();
+    }
+  } catch(e) {
+    showToast('❌ Error updating capability', 'error');
+    refreshAgents();
   }
 }
 
@@ -1451,7 +1572,12 @@ async function loadTranscodeQueue(silent = false, force = false) {
         }
         let assignment = '';
         if (f.assigned_to) {
-          assignment = `<span style="color:var(--accent);font-size:0.7rem;margin-left:8px;">→ ${escHtml(f.assigned_to)}</span>`;
+          let typeBadge = '';
+          if (f.work_type) {
+            const typeColor = f.work_type === 'gpu' ? 'var(--accent-2)' : 'var(--warn)';
+            typeBadge = `<span style="background:${typeColor};color:#111;font-size:0.65rem;padding:1px 5px;border-radius:3px;margin-left:6px;">${f.work_type.toUpperCase()}</span>`;
+          }
+          assignment = `<span style="color:var(--accent);font-size:0.7rem;margin-left:8px;">→ ${escHtml(f.assigned_to)}${typeBadge}</span>`;
         }
         return `<div class="queue-item"><span class="q-icon">⚡</span>${escHtml(f.filepath)}${codecInfo}${assignment}</div>`;
       }).join('');
@@ -1625,6 +1751,7 @@ async function transcodeScan() {
       if (currentQueueType === 'pending') {
         pendingQueueFiles = pendingQueueFiles.filter(f => f !== file);
         renderPendingQueue(pendingQueueFiles);
+        updateQueueCounts();  // keep the "Pending Queue (N)" tab label in sync as items are removed
       }
       
       // Check for cancellation requested by clicking the button again
@@ -1721,6 +1848,7 @@ async function loadQueue(silent = false) {
     if (files.length === 0) {
       document.getElementById('queue-list').innerHTML = '<div class="empty-state"><div class="icon">✅</div>Queue is empty — all files processed!</div>';
       pendingQueueFiles = [];
+      updateQueueCounts();   // ensure the small "Pending Queue (N)" tab label is updated even when count goes to 0
       return;
     }
     
@@ -1778,11 +1906,52 @@ async function loadSettingsTab() {
     document.getElementById('s-source-folders').value = s.source_folders || '';
     document.getElementById('s-temp-transcode-folder').value = s.temp_transcode_folder || '';
     document.getElementById('s-file-types').value = s.file_types || '';
+    // HandBrake + FFprobe paths are now in General Settings
     document.getElementById('s-handbrake-cli').value = s.handbrake_cli || '';
     document.getElementById('s-ffprobe-path').value = s.ffprobe_path || '';
-    document.getElementById('s-preset').value = s.preset || '';
-    document.getElementById('s-preset-import-file').value = s.preset_import_file || '';
-    setPresetMode(s.preset_mode || 'preset');
+
+    // Legacy single preset fields removed from UI (CPU/GPU presets are now used instead)
+    // Keeping these lines commented in case someone wants to restore legacy mode later
+    // document.getElementById('s-preset').value = s.preset || '';
+    // document.getElementById('s-preset-import-file').value = s.preset_import_file || '';
+    // setPresetMode(s.preset_mode || 'preset');
+
+    // Load CPU Preset
+    document.getElementById('s-cpu-preset').value = s.cpu_preset || '';
+    document.getElementById('s-cpu-preset-import-file').value = s.cpu_preset_import_file || '';
+    const cpuMode = s.cpu_preset_mode || 'preset';
+    window.cpuPresetMode = cpuMode;
+    setCPUPresetMode(cpuMode);
+
+    // Load GPU Preset
+    document.getElementById('s-gpu-preset').value = s.gpu_preset || '';
+    document.getElementById('s-gpu-preset-import-file').value = s.gpu_preset_import_file || '';
+    const gpuMode = s.gpu_preset_mode || 'preset';
+    window.gpuPresetMode = gpuMode;
+    setGPUPresetMode(gpuMode);
+
+    // If in import mode, try to auto-load the available presets from the file
+    // so the user can see the dropdown populated with the previously selected value.
+    if (cpuMode === 'import' && s.cpu_preset_import_file) {
+      // Fire and forget - user can click "Load Presets" manually if needed
+      loadPresetsFromImportFile('cpu').then(() => {
+        const savedName = s.cpu_preset || '';
+        if (savedName) {
+          const sel = document.getElementById('s-cpu-preset-from-import');
+          if (sel) sel.value = savedName;
+        }
+      }).catch(() => {});
+    }
+
+    if (gpuMode === 'import' && s.gpu_preset_import_file) {
+      loadPresetsFromImportFile('gpu').then(() => {
+        const savedName = s.gpu_preset || '';
+        if (savedName) {
+          const sel = document.getElementById('s-gpu-preset-from-import');
+          if (sel) sel.value = savedName;
+        }
+      }).catch(() => {});
+    }
     const enabled = s.exclusion_enabled === 'true';
     document.getElementById('s-exclusion-enabled').checked = enabled;
     document.getElementById('exclusion-toggle-label').textContent = enabled ? 'Enabled' : 'Disabled';
@@ -1794,12 +1963,78 @@ async function loadSettingsTab() {
   } catch(e) { console.error(e); }
 }
 
-function setPresetMode(mode) {
-  currentPresetMode = mode;
-  document.getElementById('pm-preset').classList.toggle('active', mode === 'preset');
-  document.getElementById('pm-import').classList.toggle('active', mode === 'import');
-  document.getElementById('preset-name-group').style.display = mode === 'preset' ? '' : 'none';
-  document.getElementById('preset-import-group').style.display = mode === 'import' ? '' : 'none';
+// Legacy setPresetMode removed (single preset mode is no longer used in the UI)
+
+// CPU Preset mode switching
+function setCPUPresetMode(mode) {
+  window.cpuPresetMode = mode;
+  document.getElementById('cpu-pm-preset').classList.toggle('active', mode === 'preset');
+  document.getElementById('cpu-pm-import').classList.toggle('active', mode === 'import');
+  document.getElementById('cpu-preset-name-group').style.display = mode === 'preset' ? '' : 'none';
+  document.getElementById('cpu-preset-import-group').style.display = mode === 'import' ? '' : 'none';
+}
+
+// GPU Preset mode switching
+function setGPUPresetMode(mode) {
+  window.gpuPresetMode = mode;
+  document.getElementById('gpu-pm-preset').classList.toggle('active', mode === 'preset');
+  document.getElementById('gpu-pm-import').classList.toggle('active', mode === 'import');
+  document.getElementById('gpu-preset-name-group').style.display = mode === 'preset' ? '' : 'none';
+  document.getElementById('gpu-preset-import-group').style.display = mode === 'import' ? '' : 'none';
+}
+
+// Load preset names from an import file via the backend (so we can read network paths)
+async function loadPresetsFromImportFile(type) {
+  const isCpu = type === 'cpu';
+  const fileInputId = isCpu ? 's-cpu-preset-import-file' : 's-gpu-preset-import-file';
+  const selectId = isCpu ? 's-cpu-preset-from-import' : 's-gpu-preset-from-import';
+  const btnText = isCpu ? 'CPU' : 'GPU';
+
+  const filepath = document.getElementById(fileInputId).value.trim();
+  if (!filepath) {
+    showToast('Please enter a preset import file path first', 'error');
+    return;
+  }
+
+  const select = document.getElementById(selectId);
+  select.innerHTML = '<option value="">Loading presets...</option>';
+  select.disabled = true;
+
+  try {
+    const res = await fetch('/api/parse-preset-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filepath })
+    });
+
+    const data = await res.json();
+
+    if (!data.ok) {
+      select.innerHTML = '<option value="">-- Error loading presets --</option>';
+      showToast(`Failed to load ${btnText} presets: ${data.error || 'Unknown error'}`, 'error');
+      return;
+    }
+
+    const presets = data.presets || [];
+    select.innerHTML = '<option value="">-- Select a preset --</option>';
+
+    if (presets.length === 0) {
+      showToast(`No presets found in ${btnText} import file`, 'error');
+    } else {
+      presets.forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        select.appendChild(opt);
+      });
+      showToast(`Loaded ${presets.length} presets from ${btnText} file`);
+    }
+  } catch (e) {
+    select.innerHTML = '<option value="">-- Error --</option>';
+    showToast(`Error loading ${btnText} presets: ${e.message}`, 'error');
+  } finally {
+    select.disabled = false;
+  }
 }
 
 async function saveGeneralSettings() {
@@ -1810,6 +2045,9 @@ async function saveGeneralSettings() {
     source_folders: document.getElementById('s-source-folders').value,
     file_types: document.getElementById('s-file-types').value,
     temp_transcode_folder: document.getElementById('s-temp-transcode-folder').value,
+    // HandBrake + FFprobe paths moved here from legacy section
+    handbrake_cli: document.getElementById('s-handbrake-cli').value,
+    ffprobe_path: document.getElementById('s-ffprobe-path').value,
   };
   try {
     const res = await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
@@ -1818,17 +2056,41 @@ async function saveGeneralSettings() {
   } catch(e) { showToast('❌ Error', 'error'); }
 }
 
-async function saveHandbrakeSettings() {
+// Legacy saveHandbrakeSettings() removed — HandBrakeCLI + FFprobe paths are now saved via saveGeneralSettings()
+// The old single-preset controls have been replaced by separate CPU and GPU preset sections.
+
+async function saveCPUPresetSettings() {
+  const isImport = window.cpuPresetMode === 'import';
+  const presetName = isImport 
+    ? document.getElementById('s-cpu-preset-from-import').value 
+    : document.getElementById('s-cpu-preset').value;
+
   const payload = {
-    handbrake_cli: document.getElementById('s-handbrake-cli').value,
-    ffprobe_path: document.getElementById('s-ffprobe-path').value,
-    preset_mode: currentPresetMode,
-    preset: document.getElementById('s-preset').value,
-    preset_import_file: document.getElementById('s-preset-import-file').value,
+    cpu_preset_mode: window.cpuPresetMode || 'preset',
+    cpu_preset: presetName || (isImport ? '' : document.getElementById('s-cpu-preset').value),
+    cpu_preset_import_file: document.getElementById('s-cpu-preset-import-file').value,
   };
   try {
     const res = await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-    if (res.ok) showToast('✅ HandBrake settings saved!');
+    if (res.ok) showToast('✅ CPU Preset saved!');
+    else showToast('❌ Failed to save', 'error');
+  } catch(e) { showToast('❌ Error', 'error'); }
+}
+
+async function saveGPUPresetSettings() {
+  const isImport = window.gpuPresetMode === 'import';
+  const presetName = isImport 
+    ? document.getElementById('s-gpu-preset-from-import').value 
+    : document.getElementById('s-gpu-preset').value;
+
+  const payload = {
+    gpu_preset_mode: window.gpuPresetMode || 'preset',
+    gpu_preset: presetName || (isImport ? '' : document.getElementById('s-gpu-preset').value),
+    gpu_preset_import_file: document.getElementById('s-gpu-preset-import-file').value,
+  };
+  try {
+    const res = await fetch('/api/settings', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    if (res.ok) showToast('✅ GPU Preset saved!');
     else showToast('❌ Failed to save', 'error');
   } catch(e) { showToast('❌ Error', 'error'); }
 }
@@ -2280,15 +2542,57 @@ async function init() {
     // Populate new stat tiles (basic values from what we already loaded)
     updateNewDashboardStats();
 
-    // Lightweight background poller for agents.
-    // This ensures new agents connecting are detected on both the Dashboard and Live Agents view
-    // without doing heavy constant refreshing for everything else.
+    // Initial live refresh of Processing count + Recent Activity (so first "Starting encode"
+    // messages from workers are visible without waiting for the 10s poller)
+    const initialDash = document.getElementById('view-dashboard')?.classList.contains('active');
+    if (initialDash) {
+      const processingEl = document.getElementById('stat-processing');
+      if (processingEl) {
+        fetch('/api/current-assignments')
+          .then(r => r.ok ? r.json() : {assignments: []})
+          .then(data => { processingEl.textContent = (data.assignments || []).length; })
+          .catch(() => {});
+      }
+      loadLogs();
+
+      // Initial authoritative fetch for the small Pending Queue so any files
+      // already claimed by agents at page load are not shown.
+      // Only do this if we start on the Pending sub-tab.
+      if (!scanInProgress && currentQueueType === 'pending') {
+        loadQueue(true);
+      }
+    }
+
+    // Lightweight background poller for agents + live stats + Recent Activity on the dashboard.
+    // This makes new "Starting encode" logs from CPU/GPU workers appear promptly in Recent Activity,
+    // and keeps the new "Processing" count live.
     setInterval(() => {
       const dashVisible = document.getElementById('view-dashboard')?.classList.contains('active');
       const agentsVisible = document.getElementById('view-agents')?.classList.contains('active');
 
       if (dashVisible || agentsVisible) {
         refreshAgents();
+      }
+
+      if (dashVisible) {
+        // Refresh Recent Activity so "GPU worker just picked up file X" logs show up quickly
+        loadLogs();
+
+        // Keep the Processing count fresh
+        const processingEl = document.getElementById('stat-processing');
+        if (processingEl) {
+          fetch('/api/current-assignments')
+            .then(r => r.ok ? r.json() : {assignments: []})
+            .then(data => { processingEl.textContent = (data.assignments || []).length; })
+            .catch(() => {});
+        }
+
+        // Silently re-fetch the Pending Queue from server **only when the Pending sub-tab is active**.
+        // This prevents the Pending content from overwriting the Transcode Queue view
+        // when the user has the Transcode Queue tab selected.
+        if (!scanInProgress && currentQueueType === 'pending') {
+          loadQueue(true);
+        }
       }
     }, 10000); // every 10 seconds when relevant views are open
 
@@ -2322,6 +2626,17 @@ function updateNewDashboardStats() {
   const procEl = document.getElementById('stat-processed');
   if (procEl && typeof processedTotal !== 'undefined') {
     procEl.textContent = processedTotal || '0';
+  }
+
+  // Processing (currently active encodes from current_assignments)
+  const processingEl = document.getElementById('stat-processing');
+  if (processingEl) {
+    fetch('/api/current-assignments')
+      .then(r => r.ok ? r.json() : {assignments: []})
+      .then(data => {
+        processingEl.textContent = (data.assignments || []).length;
+      })
+      .catch(() => {});
   }
 
   // Sidebar badges

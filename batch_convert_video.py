@@ -77,15 +77,18 @@ def _api(dashboard_url: str, path: str, method: str = "GET", payload: dict = Non
 
 
 def report_status(dashboard_url: str, status: str, current_file: str = "",
-                  progress: float = 0.0, request_file: bool = False) -> dict:
-    """POST status update to dashboard. Returns the response dict (may include next_file)."""
-    return _api(dashboard_url, "/api/report", method="POST", payload={
+                  progress: float = 0.0, request_file: bool = False, extra: dict = None) -> dict:
+    """POST status update to dashboard. Returns the response dict."""
+    payload = {
         "hostname": HOSTNAME,
         "status": status,
         "current_file": current_file,
         "progress": round(progress, 1),
         "request_file": request_file,
-    })
+    }
+    if extra:
+        payload.update(extra)
+    return _api(dashboard_url, "/api/report", method="POST", payload=payload)
 
 
 def _should_stop_current_work(dashboard_url: str) -> bool:
@@ -330,8 +333,11 @@ def build_handbrake_cmd(
 
     if preset_mode == "import":
         cmd += ["--preset-import-file", preset_import_file]
+        if preset:   # Required even with import file - selects which preset inside the file
+            cmd += ["--preset", preset]
     else:
-        cmd += ["--preset", preset]
+        if preset:
+            cmd += ["--preset", preset]
 
     return cmd
 
@@ -460,6 +466,15 @@ def transcode_file(
             log.info("Encode complete: %s", os.path.basename(final_path))
             post_log(dashboard_url, "INFO", f"Encode complete: {os.path.basename(final_path)}")
 
+            # Record the final output path as processed in the database.
+            # This is important for in-place replacement workflows where the
+            # transcoded file ends up at a path that is still monitored by
+            # source_folders. Using the database (not .done files) as requested.
+            try:
+                record_processed(dashboard_url, final_path, "success", "transcoded output")
+            except Exception:
+                pass
+
             # One more status update after successful finalization
             report_status(dashboard_url, "running", input_path, 100.0)
 
@@ -494,117 +509,74 @@ def transcode_file(
                 pass
         return False
 
-# ---------------------------------------------------------------------------
-# Main agent loop
-# ---------------------------------------------------------------------------
 
-def run_agent(dashboard_url: str, idle_poll: int = IDLE_POLL):
-    log.info("=" * 60)
-    log.info("  HandBrake Transcode Agent")
-    log.info("  Hostname:  %s", HOSTNAME)
-    log.info("  Dashboard: %s", dashboard_url)
-    log.info("=" * 60)
-
-    settings = get_settings(dashboard_url)
-    if not settings:
-        log.warning("Could not reach dashboard at %s — will keep retrying.", dashboard_url)
-    else:
-        log.info("Connected to dashboard.")
-
-    post_log(dashboard_url, "INFO", "Agent started")
-    report_status(dashboard_url, "idle")
-
-    files_processed = 0
+def worker_loop(dashboard_url: str, work_type: str, idle_poll: int):
+    """
+    Worker loop for either 'cpu' or 'gpu' work.
+    Runs independently in its own thread.
+    """
+    log.info(f"[{work_type.upper()}] Worker started")
 
     while True:
-        # ---- Request next file from server ----
-        resp = report_status(dashboard_url, "idle", request_file=True)
-        if not resp:
-            log.warning("Dashboard unreachable, waiting %ds...", idle_poll)
-            time.sleep(idle_poll)
-            continue
+        try:
+            # Request a file of the specific work type
+            resp = report_status(
+                dashboard_url,
+                "idle",
+                request_file=True,
+                extra={"work_type": work_type}
+            )
 
-        # Check pause / stop
-        if resp.get("paused", False):
-            kill_current_handbrake()
-            log.info("Agent stopped by dashboard. Waiting %ds...", PAUSE_POLL)
-            time.sleep(PAUSE_POLL)
-            continue
-
-        # Check max_files limit
-        max_files = int(resp.get("max_files", 0))
-        if max_files > 0 and files_processed >= max_files:
-            log.info("Reached max_files limit (%d). Stopping.", max_files)
-            post_log(dashboard_url, "INFO", f"Reached max_files limit ({max_files}). Agent stopping.")
-            report_status(dashboard_url, "stopped")
-            break
-
-        next_file = resp.get("next_file")
-        if not next_file:
-            log.info("No files available. Waiting %ds...", idle_poll)
-            time.sleep(idle_poll)
-            continue
-
-        # Pull settings from the response (server sends them with every report reply)
-        handbrake_cli      = resp.get("handbrake_cli", "HandBrakeCLI.exe")
-        preset_mode        = resp.get("preset_mode", "preset")
-        preset             = resp.get("preset", "H.265 MKV 1080p30")
-        preset_import_file = resp.get("preset_import_file", "")
-        output_ext         = resp.get("output_extension", "mkv")
-        done_ext           = resp.get("done_marker_ext", ".done")
-        temp_transcode_folder = resp.get("temp_transcode_folder", "") or None
-
-        # Validate HandBrakeCLI path
-        if not os.path.isfile(handbrake_cli):
-            found = shutil.which("HandBrakeCLI") or shutil.which("HandBrakeCLI.exe")
-            if found:
-                handbrake_cli = found
-            else:
-                msg = f"HandBrakeCLI not found at '{handbrake_cli}'. Update the path in dashboard settings."
-                log.error(msg)
-                post_log(dashboard_url, "ERROR", msg)
-                report_status(dashboard_url, "error")
-                time.sleep(60)
+            if not resp:
+                time.sleep(idle_poll)
                 continue
 
-        # ---- FFmpeg exclusion check ----
-        # Build a settings dict from the response for check_exclusion
-        exc_settings = {
-            "exclusion_enabled":    resp.get("exclusion_enabled", "false"),
-            "exclusion_container":  resp.get("exclusion_container", "mp4"),
-            "exclusion_audio_codec": resp.get("exclusion_audio_codec", "aac"),
-            "exclusion_video_codec": resp.get("exclusion_video_codec", "h264"),
-            "ffprobe_path":         resp.get("ffprobe_path", ""),
-        }
+            # Check if this worker type is enabled for this agent
+            if work_type == "cpu" and not resp.get("cpu_enabled", True):
+                time.sleep(idle_poll)
+                continue
+            if work_type == "gpu" and not resp.get("gpu_enabled", True):
+                time.sleep(idle_poll)
+                continue
 
-        # Report "probing" status so dashboard shows activity during ffprobe check
-        report_status(dashboard_url, "running", next_file, 0.0)
+            if resp.get("paused", False):
+                time.sleep(5)
+                continue
 
-        try:
-            should_skip = check_exclusion(next_file, exc_settings, dashboard_url)
-        except Exception as e:
-            log.warning("Exclusion check error for %s: %s", next_file, e)
-            should_skip = False
+            next_file = resp.get("next_file")
+            if not next_file:
+                time.sleep(idle_poll)
+                continue
 
-        if should_skip:
-            # File already recorded in database by check_exclusion, just continue
-            files_processed += 1
-            continue
+            # Determine which preset to use based on work type
+            if work_type == "cpu":
+                preset_mode = resp.get("cpu_preset_mode", "preset")
+                preset = resp.get("cpu_preset", "H.265 MKV 1080p30")
+                preset_import_file = resp.get("cpu_preset_import_file", "")
+            else:
+                preset_mode = resp.get("gpu_preset_mode", "preset")
+                preset = resp.get("gpu_preset", "H.265 MKV 1080p30")
+                preset_import_file = resp.get("gpu_preset_import_file", "")
 
-        # ---- Encode the file ----
-        # Final safety check before starting a potentially long-running encode
-        if _should_stop_current_work(dashboard_url):
-            kill_current_handbrake()
-            log.info("Agent was stopped before starting encode of %s", os.path.basename(next_file))
-            continue
+            handbrake_cli = resp.get("handbrake_cli", "HandBrakeCLI.exe")
+            output_ext = resp.get("output_extension", "mkv")
+            done_ext = resp.get("done_marker_ext", ".done")
+            temp_transcode_folder = resp.get("temp_transcode_folder") or None
 
-        current_progress = [0.0]
+            # Validate HandBrakeCLI
+            if not os.path.isfile(handbrake_cli):
+                found = shutil.which("HandBrakeCLI") or shutil.which("HandBrakeCLI.exe")
+                if found:
+                    handbrake_cli = found
+                else:
+                    log.error(f"[{work_type.upper()}] HandBrakeCLI not found")
+                    time.sleep(30)
+                    continue
 
-        def progress_callback(pct: float):
-            current_progress[0] = pct
-            report_status(dashboard_url, "running", next_file, pct)
+            # Run the transcode
+            def progress_callback(pct):
+                report_status(dashboard_url, "running", next_file, pct, extra={"work_type": work_type})
 
-        try:
             success = transcode_file(
                 input_path=next_file,
                 handbrake_cli=handbrake_cli,
@@ -617,27 +589,55 @@ def run_agent(dashboard_url: str, idle_poll: int = IDLE_POLL):
                 progress_callback=progress_callback,
                 temp_transcode_folder=temp_transcode_folder,
             )
-        except KeyboardInterrupt:
-            log.info("Interrupted by user.")
-            report_status(dashboard_url, "stopped")
-            post_log(dashboard_url, "WARN", "Agent interrupted by user (KeyboardInterrupt)")
-            sys.exit(0)
+
+            if success:
+                record_processed(dashboard_url, next_file, "success", f"{work_type.upper()} encode")
+                log.info(f"[{work_type.upper()}] Successfully processed: {os.path.basename(next_file)}")
+            else:
+                record_processed(dashboard_url, next_file, "failure", f"{work_type.upper()} encode failed")
+
         except Exception as e:
-            log.exception("Unexpected error encoding %s: %s", next_file, e)
-            post_log(dashboard_url, "ERROR", f"Unexpected error: {e}")
-            success = False
+            log.exception(f"[{work_type.upper()}] Worker error: {e}")
+            time.sleep(5)
 
-        if success:
-            record_processed(dashboard_url, next_file, "success",
-                             f"Transcoded — preset_mode:{preset_mode} preset:{preset}")
-            post_log(dashboard_url, "INFO", f"✓ Transcoded: {os.path.basename(next_file)}")
-            files_processed += 1
-        else:
-            record_processed(dashboard_url, next_file, "failure",
-                             "HandBrakeCLI returned non-zero exit code")
-            post_log(dashboard_url, "ERROR", f"✗ Transcode failed: {os.path.basename(next_file)}")
 
-    log.info("Agent finished. Total files processed: %d", files_processed)
+# ---------------------------------------------------------------------------
+# Main agent entry point (launches CPU and/or GPU workers)
+# ---------------------------------------------------------------------------
+
+def run_agent(dashboard_url: str, idle_poll: int = IDLE_POLL):
+    log.info("=" * 60)
+    log.info("  HandBrake Transcode Agent (Dual CPU/GPU mode)")
+    log.info("  Hostname:  %s", HOSTNAME)
+    log.info("  Dashboard: %s", dashboard_url)
+    log.info("=" * 60)
+
+    post_log(dashboard_url, "INFO", "Agent started (Dual CPU/GPU mode)")
+
+    # Launch two independent worker threads.
+    # Each worker will only run jobs for its capability type.
+    threading.Thread(
+        target=worker_loop,
+        args=(dashboard_url, "cpu", idle_poll),
+        daemon=True,
+        name="CPU-Worker"
+    ).start()
+
+    threading.Thread(
+        target=worker_loop,
+        args=(dashboard_url, "gpu", idle_poll),
+        daemon=True,
+        name="GPU-Worker"
+    ).start()
+
+    # Keep the main thread alive
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        log.info("Agent shutting down...")
+        kill_current_handbrake()
+        sys.exit(0)
 
 # ---------------------------------------------------------------------------
 # Entry point

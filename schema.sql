@@ -15,7 +15,9 @@ CREATE TABLE IF NOT EXISTS agents (
     current_file TEXT,
     progress     REAL NOT NULL DEFAULT 0,
     last_seen    TEXT NOT NULL,
-    paused       INTEGER NOT NULL DEFAULT 1
+    paused       INTEGER NOT NULL DEFAULT 1,
+    cpu_enabled  INTEGER NOT NULL DEFAULT 1,
+    gpu_enabled  INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS agent_logs (
@@ -47,10 +49,27 @@ CREATE TABLE IF NOT EXISTS transcode_queue (
 
 -- Tracks which agent is currently working on which file.
 -- This makes assignments survive dashboard restarts (unlike the old in-memory dict).
+-- Supports one active assignment per (hostname, work_type) so an agent can
+-- transcode one CPU file and one GPU file at the same time.
 CREATE TABLE IF NOT EXISTS current_assignments (
-    hostname     TEXT PRIMARY KEY,
+    hostname     TEXT NOT NULL,
     filepath     TEXT NOT NULL,
-    assigned_at  TEXT NOT NULL
+    assigned_at  TEXT NOT NULL,
+    work_type    TEXT NOT NULL DEFAULT 'cpu',
+    PRIMARY KEY (hostname, work_type),
+    UNIQUE (filepath)   -- Enforces that a file is only ever assigned to one worker at a time
+);
+
+-- Live per-worker status reported by each agent thread (cpu-worker and gpu-worker).
+-- Powers the split-row view on the dashboard Live Agents pane.
+CREATE TABLE IF NOT EXISTS agent_workers (
+    hostname     TEXT NOT NULL,
+    work_type    TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'idle',
+    current_file TEXT,
+    progress     REAL NOT NULL DEFAULT 0,
+    last_seen    TEXT NOT NULL,
+    PRIMARY KEY (hostname, work_type)
 );
 
 -- Note: The agents.paused column was added via migration in init_db().
