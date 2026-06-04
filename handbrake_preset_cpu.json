@@ -33,14 +33,14 @@
       "PresetDescription": "Plex compatible - Original resolution, CRF 18, MP4, H.264, AAC + surround, all subtitles (forced burned)",
       "PresetName": "Plex Original",
       "Type": 1,
-      "SubtitleTrackSelectionBehavior": "all",
-      "SubtitleTrackNamePassthru": true,
+      "SubtitleAddCC": false,
       "SubtitleAddForeignAudioSearch": true,
       "SubtitleBurnBehavior": "foreign",
       "SubtitleBurnBDSub": false,
       "SubtitleBurnDVDSub": false,
       "SubtitleLanguageList": ["eng"],
-      "SubtitleAddCC": false,
+      "SubtitleTrackSelectionBehavior": "all",
+      "SubtitleTrackNamePassthru": true,
       "VideoEncoder": "x264",
       "VideoQualityType": 2,
       "VideoQualitySlider": 18,
@@ -56,7 +56,7 @@
       "PicturePARHeight": 0
     }
   ],
-  "VersionMajor": 40,
+  "VersionMajor": 67,
   "VersionMicro": 0,
   "VersionMinor": 0
 }
